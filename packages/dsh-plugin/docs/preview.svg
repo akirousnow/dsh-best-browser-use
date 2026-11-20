@@ -1,0 +1,76 @@
+<svg width="640" height="300" viewBox="0 0 640 300" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="abb-prev-blue" x1="40" y1="46" x2="226" y2="254" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3B82F6" />
+      <stop offset="1" stop-color="#3730A3" />
+    </linearGradient>
+    <linearGradient id="abb-prev-cyan" x1="256" y1="98" x2="384" y2="202" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0284C7" />
+      <stop offset="1" stop-color="#2563EB" />
+    </linearGradient>
+    <linearGradient id="abb-prev-green" x1="414" y1="46" x2="600" y2="254" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#059669" />
+      <stop offset="1" stop-color="#2563EB" />
+    </linearGradient>
+  </defs>
+
+  <!-- Left panel: Real Browser window + tabs (32px+ safe margins) -->
+  <rect x="40" y="46" width="186" height="208" rx="14" fill="#3B82F6" fill-opacity="0.08" stroke="url(#abb-prev-blue)" stroke-width="2" />
+  <!-- Top-only rounded title bar path -->
+  <path d="M54 46H212C219.732 46 226 52.268 226 60V80H40V60C40 52.268 46.268 46 54 46Z" fill="url(#abb-prev-blue)" fill-opacity="0.24" />
+  <circle cx="60" cy="63" r="4.5" fill="#EF4444" />
+  <circle cx="75" cy="63" r="4.5" fill="#F59E0B" />
+  <circle cx="90" cy="63" r="4.5" fill="#10B981" />
+
+  <!-- Tab rows inside browser -->
+  <rect x="56" y="96" width="154" height="32" rx="8" fill="#2563EB" fill-opacity="0.16" stroke="#2563EB" stroke-opacity="0.45" stroke-width="1.3" />
+  <circle cx="71" cy="112" r="4.5" fill="#10B981" />
+  <rect x="84" y="108" width="76" height="8" rx="4" fill="#2563EB" fill-opacity="0.72" />
+  <rect x="170" y="106" width="28" height="12" rx="6" fill="#059669" fill-opacity="0.65" />
+
+  <rect x="56" y="138" width="154" height="32" rx="8" fill="#64748B" fill-opacity="0.12" stroke="#64748B" stroke-opacity="0.34" stroke-width="1.3" />
+  <circle cx="71" cy="154" r="4.5" fill="#10B981" />
+  <rect x="84" y="150" width="66" height="8" rx="4" fill="#64748B" fill-opacity="0.68" />
+
+  <rect x="56" y="180" width="154" height="56" rx="9" fill="#64748B" fill-opacity="0.10" stroke="#64748B" stroke-opacity="0.30" stroke-width="1.3" />
+  <rect x="70" y="194" width="58" height="9" rx="4.5" fill="#0284C7" fill-opacity="0.78" />
+  <rect x="70" y="211" width="106" height="8" rx="4" fill="#64748B" fill-opacity="0.58" />
+
+  <!-- Bidirectional arrows connecting Browser <-> Relay <-> DSH -->
+  <path d="M236 150H268" stroke="url(#abb-prev-cyan)" stroke-width="3" stroke-linecap="round" stroke-dasharray="5 5" />
+  <polygon points="240,144 230,150 240,156" fill="#0284C7" />
+  <polygon points="264,144 274,150 264,156" fill="#2563EB" />
+
+  <path d="M372 150H404" stroke="url(#abb-prev-cyan)" stroke-width="3" stroke-linecap="round" stroke-dasharray="5 5" />
+  <polygon points="376,144 366,150 376,156" fill="#0284C7" />
+  <polygon points="400,144 410,150 400,156" fill="#059669" />
+
+  <!-- Center node: Relay Bridge -->
+  <rect x="276" y="96" width="88" height="108" rx="16" fill="#0284C7" fill-opacity="0.12" stroke="url(#abb-prev-cyan)" stroke-width="2" />
+  <circle cx="320" cy="116" r="5" fill="#10B981" />
+  <path d="M298 160C298 147 308 137 320 137C332 137 342 147 342 160" stroke="url(#abb-prev-cyan)" stroke-width="3.5" stroke-linecap="round" />
+  <circle cx="298" cy="160" r="5.5" fill="#0284C7" />
+  <circle cx="342" cy="160" r="5.5" fill="#059669" />
+  <rect x="296" y="180" width="48" height="8" rx="4" fill="#2563EB" fill-opacity="0.72" />
+
+  <!-- Right panel: DSH Agent + AXTree diff cards + composer dock pill -->
+  <rect x="414" y="46" width="186" height="208" rx="14" fill="#059669" fill-opacity="0.07" stroke="url(#abb-prev-green)" stroke-width="2" />
+  <rect x="430" y="64" width="154" height="114" rx="10" fill="#64748B" fill-opacity="0.11" stroke="#64748B" stroke-opacity="0.32" stroke-width="1.3" />
+
+  <rect x="442" y="80" width="24" height="11" rx="4" fill="#2563EB" fill-opacity="0.82" />
+  <rect x="474" y="81" width="92" height="9" rx="4.5" fill="#64748B" fill-opacity="0.68" />
+
+  <rect x="442" y="103" width="24" height="11" rx="4" fill="#059669" fill-opacity="0.85" />
+  <rect x="474" y="104" width="76" height="9" rx="4.5" fill="#059669" fill-opacity="0.68" />
+
+  <rect x="442" y="126" width="24" height="11" rx="4" fill="#0284C7" fill-opacity="0.85" />
+  <rect x="474" y="127" width="96" height="9" rx="4.5" fill="#2563EB" fill-opacity="0.68" />
+
+  <rect x="442" y="150" width="64" height="8" rx="4" fill="#64748B" fill-opacity="0.52" />
+
+  <!-- Status dock pill at bottom right -->
+  <rect x="430" y="194" width="154" height="44" rx="11" fill="#2563EB" fill-opacity="0.14" stroke="#0284C7" stroke-opacity="0.55" stroke-width="1.5" />
+  <circle cx="448" cy="216" r="5" fill="#10B981" />
+  <rect x="461" y="211" width="76" height="10" rx="5" fill="#2563EB" fill-opacity="0.78" />
+  <rect x="547" y="206" width="26" height="20" rx="6" fill="#2563EB" fill-opacity="0.88" />
+</svg>

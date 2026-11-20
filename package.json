@@ -1,0 +1,31 @@
+{
+  "name": "agent-browser-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH extension and standalone CDP bridge allowing AI agents to control the user's real browser with zero debugging flags.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/akirousnow/dsh-best-browser-use.git"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @agent-browser-bridge/protocol build && pnpm --filter @agent-browser-bridge/relay build && pnpm --filter @agent-browser-bridge/engine build && pnpm --filter @agent-browser-bridge/mcp build && pnpm --filter @agent-browser-bridge/cli build && pnpm --filter @agent-browser-bridge/extension build && pnpm --filter @local/agent-browser-bridge build",
+    "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
+    "test": "vitest run",
+    "pack:ext": "pnpm --filter @agent-browser-bridge/extension pack"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.310",
+    "@types/node": "^22.15.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.25.4",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.4",
+    "ws": "^8.18.1"
+  }
+}

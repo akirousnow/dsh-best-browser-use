@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Agent browser bridge",
+    "description": "Lets DeepSeek Harness inspect and control tabs in your everyday Chrome, Edge, or Brave browser with your existing logins—no browser launch flags required. Adds 15 browser_* tools (4 observation tools plus 11 interaction tools with incremental accessibility diffs and compressed JPEG screenshots) and a Browser status control (shown as Browser · waiting or Browser · N tabs) on the new-session screen and in the conversation composer dock. Click it to download the companion Chrome extension zip (unzip and load unpacked via Developer Mode in chrome://extensions), inspect visible tabs, or detach individual tabs. Security & data: webpage content is marked untrusted to mitigate prompt injection, local CDP stays loopback-only, screenshots are attached to model requests only on image-capable routes, and readOnly mode restricts the agent to observation tools. Turning off the plugin removes the browser_* tools, hides the Browser status control, and stops any relay started by this plugin (externally started relays keep running).",
+    "detail": "docs/DETAIL.md"
+  }
+}

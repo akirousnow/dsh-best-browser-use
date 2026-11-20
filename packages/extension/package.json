@@ -1,0 +1,13 @@
+{
+  "name": "@agent-browser-bridge/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/pack.mjs",
+    "pack": "node scripts/pack.mjs"
+  },
+  "dependencies": {
+    "@agent-browser-bridge/protocol": "workspace:*"
+  }
+}

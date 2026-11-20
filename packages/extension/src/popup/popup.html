@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Browser Bridge</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div class="brand">
+          <span class="dot" id="status-dot" data-state="disconnected" aria-hidden="true"></span>
+          <div class="brand-text">
+            <div class="title">Agent Browser Bridge</div>
+            <div class="subtitle" id="status-text" aria-live="polite">Disconnected</div>
+          </div>
+        </div>
+        <button id="toggle-connect" class="btn btn-primary" type="button">Connect</button>
+      </header>
+
+      <div id="error-banner" class="error-banner hidden" role="alert"></div>
+      <div id="dirty-banner" class="info-banner hidden" role="status"></div>
+
+      <section class="card">
+        <div class="section-title" id="lbl-conn-settings">Relay connection</div>
+        <div class="row two-col">
+          <label class="field">
+            <span id="lbl-host">Host / IP (or paste ws:// URL)</span>
+            <input id="input-host" type="text" placeholder="127.0.0.1" autocomplete="off" />
+          </label>
+          <label class="field port-field">
+            <span id="lbl-port">Port</span>
+            <input id="input-port" type="number" min="1" max="65535" placeholder="9229" />
+          </label>
+        </div>
+
+        <label class="field">
+          <span id="lbl-token">Token (optional locally, required remotely)</span>
+          <div class="password-wrap">
+            <input id="input-token" type="password" placeholder="Paste Relay token" autocomplete="off" />
+            <button
+              id="toggle-token-vis"
+              class="btn-icon"
+              type="button"
+              aria-pressed="false"
+              aria-label="Show token"
+            >Show</button>
+          </div>
+        </label>
+
+        <div class="row inline-checks">
+          <label class="checkbox-label">
+            <input id="input-wss" type="checkbox" />
+            <span id="lbl-wss">Use WSS (TLS proxy)</span>
+          </label>
+          <label class="checkbox-label">
+            <input id="input-autoconnect" type="checkbox" />
+            <span id="lbl-autoconnect">Auto-connect</span>
+          </label>
+        </div>
+
+        <details class="advanced">
+          <summary id="lbl-advanced">Advanced path</summary>
+          <label class="field">
+            <span id="lbl-path">WebSocket path</span>
+            <input id="input-path" type="text" placeholder="/ext" autocomplete="off" />
+          </label>
+        </details>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <span class="section-title" id="lbl-tab-mode">Tab access mode</span>
+          <div class="segmented" role="group" aria-label="Tab access mode">
+            <button id="mode-auto" type="button" class="seg-btn active" aria-pressed="true">Auto all</button>
+            <button id="mode-manual" type="button" class="seg-btn" aria-pressed="false">Manual</button>
+          </div>
+        </div>
+
+        <div class="tab-list" id="tab-list">
+          <div class="empty-state">No eligible web tabs open.</div>
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

@@ -1,0 +1,51 @@
+{
+  "name": "@local/agent-browser-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Control your real Chrome, Edge, or Brave browser from DeepSeek Harness with zero debugging flags.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/akirousnow/dsh-best-browser-use.git",
+    "directory": "packages/dsh-plugin"
+  },
+  "engines": {
+    "dsh": ">=0.2.0-0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "dist",
+    "assets",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.52.0",
+    "ws": "^8.18.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-conversation"]
+    }
+  }
+}

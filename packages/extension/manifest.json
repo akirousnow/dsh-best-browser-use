@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Agent Browser Bridge",
+  "version": "0.1.0",
+  "description": "Connect your real Chrome/Edge/Brave browser to AI Agents & DeepSeek Harness without remote debugging flags.",
+  "permissions": ["debugger", "tabs", "storage", "alarms"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Agent Browser Bridge",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}

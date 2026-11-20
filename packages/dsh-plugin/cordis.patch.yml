@@ -1,0 +1,4 @@
+- insert:
+    - id: agent-browser-bridge
+      name: '@local/agent-browser-bridge'
+      config: {}
