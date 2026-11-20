@@ -26,6 +26,10 @@ export interface MockChromeState {
     method: string;
     params?: Record<string, unknown>;
   }>;
+  /** Chrome's real target id per tab, as `chrome.debugger.getTargets()` would report it. */
+  realTargetIds: Map<number, string>;
+  /** Deterministic real target id for a tab (created on first use). */
+  realTargetIdFor: (tabId: number) => string;
   commandHandler?: (
     target: ChromeDebuggerTargetLike,
     method: string,
@@ -61,6 +65,15 @@ export function createMockChromeApi(
   const attachFailTabIds = new Set<number>();
   const lastCreatedOptions: Array<{ url?: string; active?: boolean }> = [];
   const sentCommands: MockChromeState['sentCommands'] = [];
+  const realTargetIds = new Map<number, string>();
+
+  const realTargetIdFor = (tabId: number): string => {
+    const existing = realTargetIds.get(tabId);
+    if (existing !== undefined) return existing;
+    const generated = `R${String(tabId).padStart(31, '0')}`;
+    realTargetIds.set(tabId, generated);
+    return generated;
+  };
 
   const createdListeners: Array<(tab: ChromeTabLike) => void> = [];
   const updatedListeners: Array<
@@ -78,6 +91,8 @@ export function createMockChromeApi(
     attachFailTabIds,
     lastCreatedOptions,
     sentCommands,
+    realTargetIds,
+    realTargetIdFor,
     triggerDebuggerEvent(source, method, params) {
       for (const fn of eventListeners) fn(source, method, params);
     },
@@ -160,6 +175,18 @@ export function createMockChromeApi(
           return await state.commandHandler(target, method, params);
         }
         return { ok: true, echoedMethod: method, echoedParams: params ?? {} };
+      },
+      async getTargets() {
+        return [...tabs.values()]
+          .filter((tab): tab is ChromeTabLike & { id: number } => tab.id !== undefined)
+          .map((tab) => ({
+            id: realTargetIdFor(tab.id),
+            tabId: tab.id,
+            type: 'page',
+            title: tab.title ?? '',
+            url: tab.url ?? '',
+            attached: attachedTabIds.has(tab.id),
+          }));
       },
       onEvent: { addListener: (cb) => eventListeners.push(cb) },
       onDetach: { addListener: (cb) => detachListeners.push(cb) },

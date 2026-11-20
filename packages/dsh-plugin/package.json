@@ -1,6 +1,6 @@
 {
   "name": "@local/agent-browser-bridge",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Control your real Chrome, Edge, or Brave browser from DeepSeek Harness with zero debugging flags.",
@@ -35,7 +35,6 @@
     "build": "node scripts/build.mjs"
   },
   "dependencies": {
-    "playwright-core": "^1.52.0",
     "ws": "^8.18.1"
   },
   "dsh": {

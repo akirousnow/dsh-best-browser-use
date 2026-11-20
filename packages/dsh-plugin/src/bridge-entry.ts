@@ -6,13 +6,16 @@ export {
 } from '../../protocol/dist/index.js';
 export {
   RelayServer,
-  queryRelayStatus,
   isLoopbackAddress,
+  queryRelayStatus,
 } from '../../relay/dist/index.js';
 export {
-  AGENT_BROWSER_READONLY_SYSTEM_PROMPT,
-  AGENT_BROWSER_SYSTEM_PROMPT,
-  BROWSER_TOOL_CATALOG,
-  BrowserEngine,
-  READ_ONLY_TOOL_NAMES,
+  AGENT_BROWSER_BRIDGE_READONLY_SYSTEM_PROMPT,
+  AGENT_BROWSER_BRIDGE_SYSTEM_PROMPT,
+  AGENT_BROWSER_INSTALL_HINT,
+  AgentBrowserRuntime,
+  BROWSER_BRIDGE_SKILL_CONTENT,
+  BROWSER_TOOL_NAMES,
+  probeAgentBrowser,
+  resetAgentBrowserProbeCache,
 } from '../../engine/dist/index.js';

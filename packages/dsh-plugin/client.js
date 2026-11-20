@@ -45,6 +45,15 @@ window.__ModuleLoader__.load({
         pickerAria: 'Browser tab suggestions',
         pickerHint: 'Tip: type $ in the composer to quickly pick a browser tab.',
         activeTabBadge: 'Active',
+        engineLabel: 'Browser engine',
+        engineMissing: 'agent-browser is not installed',
+        engineMissingHint: (hint) => hint,
+        sessionsHeading: (n) => `Isolated test browsers (${n})`,
+        closeSession: 'Close',
+        closingSession: 'Closing…',
+        sessionTargetHeadless: 'Headless',
+        sessionTargetHeaded: 'Headed',
+        sessionTargetBridge: 'Real browser',
       },
       zh: {
         title: '真实浏览器桥接',
@@ -81,6 +90,15 @@ window.__ModuleLoader__.load({
         pickerAria: '浏览器标签页快捷选择',
         pickerHint: '提示：在输入框键入 $ 可快速搜索并插入标签页。',
         activeTabBadge: '当前',
+        engineLabel: '浏览器引擎',
+        engineMissing: '未检测到 agent-browser',
+        engineMissingHint: (hint) => hint,
+        sessionsHeading: (n) => `隔离测试浏览器 (${n})`,
+        closeSession: '关闭',
+        closingSession: '关闭中…',
+        sessionTargetHeadless: '无头',
+        sessionTargetHeaded: '有头',
+        sessionTargetBridge: '真实浏览器',
       },
     };
 
@@ -196,6 +214,7 @@ window.__ModuleLoader__.load({
         tabRef: tab.tabRef,
         title: tab.title || '',
         url: tab.url || '',
+        targetId: tab.targetId || '',
       });
     }
 
@@ -208,18 +227,25 @@ window.__ModuleLoader__.load({
             tabRef: typeof parsed.tabRef === 'string' ? parsed.tabRef : '$t1',
             title: typeof parsed.title === 'string' ? parsed.title : '',
             url: typeof parsed.url === 'string' ? parsed.url : '',
+            targetId: typeof parsed.targetId === 'string' ? parsed.targetId : '',
           };
         }
       } catch {
         // Fallback if plain ref string
       }
-      return { tabId: undefined, tabRef: String(rawRef || ''), title: '', url: '' };
+      return { tabId: undefined, tabRef: String(rawRef || ''), title: '', url: '', targetId: '' };
+    }
+
+    /** A `tab-<id>` id is a placeholder the extension uses before Chrome reports the real one. */
+    function isRealTargetId(targetId) {
+      return typeof targetId === 'string' && targetId.length > 0 && !/^tab-\d+$/.test(targetId);
     }
 
     function formatSerializedTab(tab) {
       const title = (tab.title || shortHost(tab.url) || 'Untitled').replace(/\s+/g, ' ').trim();
       const urlPart = tab.url ? ` (${tab.url})` : '';
-      return `[Browser Tab ${tab.tabRef}: "${title}"${urlPart}]`;
+      const targetPart = isRealTargetId(tab.targetId) ? ` (targetId: ${tab.targetId})` : '';
+      return `[Browser Tab ${tab.tabRef}${targetPart}: "${title}"${urlPart}]`;
     }
 
     function formatDisplayEndpoint(status) {
@@ -1064,6 +1090,7 @@ window.__ModuleLoader__.load({
 
         const [actionError, setActionError] = useState(null);
         const [detachingIds, setDetachingIds] = useState(() => new Set());
+        const [closingSessionNames, setClosingSessionNames] = useState(() => new Set());
         const [open, setOpen] = useState(false);
         const [copyState, setCopyState] = useState('idle');
         const [popStyle, setPopStyle] = useState({ left: 12, top: 12 });
@@ -1186,6 +1213,31 @@ window.__ModuleLoader__.load({
           }
         };
 
+        const handleCloseSession = async (sessionName) => {
+          setActionError(null);
+          setClosingSessionNames((prev) => new Set(prev).add(sessionName));
+          try {
+            const res = await fetch('/api/agent-browser-bridge/control', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ action: 'close_session', sessionName }),
+            });
+            const data = await res.json().catch(() => ({ ok: false }));
+            if (!res.ok || data?.ok === false) {
+              setActionError(data?.error || `HTTP ${res.status}`);
+            }
+            await statusStore.refresh();
+          } catch (err) {
+            setActionError(err instanceof Error ? err.message : String(err));
+          } finally {
+            setClosingSessionNames((prev) => {
+              const next = new Set(prev);
+              next.delete(sessionName);
+              return next;
+            });
+          }
+        };
+
         const popoverNode =
           open &&
           ReactDOM.createPortal(
@@ -1258,6 +1310,85 @@ window.__ModuleLoader__.load({
               ),
               endpointInfo.isWildcard && h('div', { className: 'abb-steps' }, t.remoteHostHint),
               status?.tokenRequired && h('div', { className: 'abb-steps' }, t.tokenRequiredHint),
+              status?.agentBrowser &&
+                h(
+                  'div',
+                  null,
+                  h(
+                    'div',
+                    { className: 'abb-section-label' },
+                    h('span', null, t.engineLabel),
+                    h(
+                      'span',
+                      null,
+                      status.agentBrowser.available
+                        ? `agent-browser ${status.agentBrowser.version || ''}`.trim()
+                        : t.engineMissing,
+                    ),
+                  ),
+                  !status.agentBrowser.available &&
+                    h(
+                      'div',
+                      { className: 'abb-error', role: 'alert' },
+                      t.engineMissingHint(
+                        status.agentBrowser.installHint ||
+                          status.agentBrowser.error ||
+                          'agent-browser is required.',
+                      ),
+                    ),
+                ),
+              status?.managedSessions &&
+                status.managedSessions.length > 0 &&
+                h(
+                  'div',
+                  null,
+                  h(
+                    'div',
+                    { className: 'abb-section-label' },
+                    h('span', null, t.sessionsHeading(status.managedSessions.length)),
+                  ),
+                  h(
+                    'div',
+                    { className: 'abb-tabs-list' },
+                    status.managedSessions.map((session) =>
+                      h(
+                        'div',
+                        { key: session.sessionName, className: 'abb-tab-row' },
+                        h(
+                          'span',
+                          { className: 'abb-badge' },
+                          session.target === 'headless'
+                            ? t.sessionTargetHeadless
+                            : session.target === 'headed'
+                              ? t.sessionTargetHeaded
+                              : t.sessionTargetBridge,
+                        ),
+                        h(
+                          'div',
+                          { className: 'abb-tab-meta' },
+                          h('div', { className: 'abb-tab-title' }, session.sessionName),
+                          session.cdpWsUrl && h('div', { className: 'abb-tab-host' }, 'bridge'),
+                        ),
+                        h(
+                          'div',
+                          { className: 'abb-tab-actions' },
+                          h(
+                            'button',
+                            {
+                              type: 'button',
+                              className: 'abb-btn-mini',
+                              disabled: closingSessionNames.has(session.sessionName),
+                              onClick: () => void handleCloseSession(session.sessionName),
+                            },
+                            closingSessionNames.has(session.sessionName)
+                              ? t.closingSession
+                              : t.closeSession,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
               visualState === 'offline' &&
                 h('div', { className: 'abb-hint' }, status?.relayError || t.offlineHint),
               visualState === 'waiting' && h('div', { className: 'abb-hint' }, t.waitingHint),

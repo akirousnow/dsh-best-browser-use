@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Agent Browser Bridge",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Connect your real Chrome/Edge/Brave browser to AI Agents & DeepSeek Harness without remote debugging flags.",
   "permissions": ["debugger", "tabs", "storage", "alarms"],
   "background": {

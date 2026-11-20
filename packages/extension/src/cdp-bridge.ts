@@ -22,6 +22,16 @@ export interface ChromeDebuggerTargetLike {
   sessionId?: string;
 }
 
+/** Subset of `chrome.debugger.Debuggee` returned by `chrome.debugger.getTargets()`. */
+export interface ChromeDebuggerTargetInfoLike {
+  id: string;
+  tabId?: number;
+  type: string;
+  title?: string;
+  url?: string;
+  attached?: boolean;
+}
+
 /** Minimal chrome.* API surface required by CdpBridge (injectable for unit testing). */
 export interface ChromeBridgeApi {
   tabs: {
@@ -46,6 +56,12 @@ export interface ChromeBridgeApi {
       method: string,
       commandParams?: Record<string, unknown>,
     ): Promise<Record<string, unknown> | undefined>;
+    /**
+     * Optional `chrome.debugger.getTargets()`. When present, CdpBridge resolves the real
+     * Chrome target id for every tab *before* attaching, so a freshly created tab never
+     * exposes a synthetic `tab-<id>` target that later turns into a second, real target.
+     */
+    getTargets?(): Promise<ChromeDebuggerTargetInfoLike[]>;
     onEvent: {
       addListener(
         cb: (
@@ -65,8 +81,12 @@ export interface ChromeBridgeApi {
 interface AttachedTabState {
   tabId: number;
   targetId: string;
-  sessionId: string;
-  aliasSessions: Set<string>;
+  /**
+   * Every CDP session currently attached to this tab. One tab is attached to
+   * `chrome.debugger` once, but any number of CDP clients (each `agent-browser`
+   * session, Playwright client, ...) can hold their own session id.
+   */
+  sessions: Set<string>;
   url: string;
   title: string;
   childSessions: Set<string>;
@@ -81,6 +101,10 @@ export interface CdpBridgeCallbacks {
  * Translates Browser-level CDP commands (`Target.*`, `Browser.*`) into `chrome.tabs`
  * + `chrome.debugger` calls, and forwards session-scoped CDP commands (including OOPIF
  * child sessions) to `chrome.debugger.sendCommand`.
+ *
+ * Multi-client model: one `chrome.debugger` attachment per tab, many CDP sessions per
+ * attachment. Root-level tab events are fanned out to every live session of that tab,
+ * and a session detaching only releases the debugger once the last session is gone.
  */
 export class CdpBridge {
   private readonly api: ChromeBridgeApi;
@@ -164,6 +188,31 @@ export class CdpBridge {
     this.targetIdToTabId.set(targetId, tabId);
   }
 
+  /**
+   * Refresh the tabId → real Chrome targetId map from `chrome.debugger.getTargets()`.
+   * This never attaches a debugger; it only reads Chrome's target inventory.
+   */
+  private async refreshRealTargetIds(): Promise<boolean> {
+    const getTargets = this.api.debugger.getTargets;
+    if (typeof getTargets !== 'function') return false;
+
+    let targets: ChromeDebuggerTargetInfoLike[] | undefined;
+    try {
+      targets = await getTargets.call(this.api.debugger);
+    } catch {
+      return false;
+    }
+    if (!Array.isArray(targets)) return false;
+
+    for (const target of targets) {
+      if (typeof target?.id !== 'string' || target.id.length === 0) continue;
+      if (typeof target.tabId !== 'number') continue;
+      if (target.type !== 'page') continue;
+      this.recordTargetIdMapping(target.tabId, target.id);
+    }
+    return true;
+  }
+
   getMode(): TabPolicyMode {
     return this.policy.getMode();
   }
@@ -206,6 +255,7 @@ export class CdpBridge {
     return summaries;
   }
 
+  /** Force-release every CDP session on one tab (user clicked Detach, or the tab is closing). */
   async detachTab(tabId: number, reason = 'user_detached'): Promise<void> {
     const state = this.attachedByTabId.get(tabId);
     if (!state) return;
@@ -225,6 +275,7 @@ export class CdpBridge {
   }
 
   async getTabSummaries(): Promise<ExtensionTabSummary[]> {
+    await this.refreshRealTargetIds();
     const tabs = await this.safeQueryTabs();
     const out: ExtensionTabSummary[] = [];
     for (const tab of tabs) {
@@ -233,6 +284,7 @@ export class CdpBridge {
       const eligible = isEligibleTabUrl(url);
       const authorized = this.policy.isAuthorized(tab.id, url);
       const attached = this.attachedByTabId.get(tab.id);
+      const primarySessionId = attached ? attached.sessions.values().next().value : undefined;
       out.push({
         tabId: tab.id,
         targetId: this.resolveTargetIdForTab(tab.id),
@@ -243,7 +295,7 @@ export class CdpBridge {
         attached: attached !== undefined,
         eligible,
         authorized,
-        ...(attached ? { sessionId: attached.sessionId } : {}),
+        ...(primarySessionId !== undefined ? { sessionId: primarySessionId } : {}),
         ...(this.detachReasons.has(tab.id) ? { detachReason: this.detachReasons.get(tab.id) } : {}),
       });
     }
@@ -354,7 +406,7 @@ export class CdpBridge {
       case 'Target.getTargetInfo': {
         const targetId = typeof params.targetId === 'string' ? params.targetId.trim() : '';
         if (!targetId || targetId === 'browser') {
-          // Browser-level Target.getTargetInfo (sent without targetId by playwright-core connectOverCDP).
+          // Browser-level Target.getTargetInfo (sent without targetId by some CDP clients).
           return {
             targetInfo: {
               targetId: 'browser',
@@ -391,12 +443,12 @@ export class CdpBridge {
         }
         const alreadyAttached = this.attachedByTabId.has(tabId);
         const state = await this.attachTabOrThrow(tabId);
-        let sessionId = state.sessionId;
-        if (alreadyAttached) {
-          // Allocate a distinct alias sessionId (e.g. for Playwright's context.newCDPSession(page))
+        let sessionId = state.sessions.values().next().value as string | undefined;
+        if (alreadyAttached || sessionId === undefined) {
+          // Allocate a distinct alias sessionId (e.g. for a second agent-browser session)
           // so multiple CDP sessions on the same tab never collide or detach each other.
           sessionId = `abb-s-${this.nextSessionSeq++}`;
-          state.aliasSessions.add(sessionId);
+          state.sessions.add(sessionId);
           this.sessionIdToTabId.set(sessionId, tabId);
         }
         const tab = await this.api.tabs.get(tabId);
@@ -430,8 +482,8 @@ export class CdpBridge {
           tabId = this.sessionIdToTabId.get(sessionId);
           if (tabId !== undefined) {
             const state = this.attachedByTabId.get(tabId);
-            if (state && state.aliasSessions.has(sessionId)) {
-              state.aliasSessions.delete(sessionId);
+            if (state && state.sessions.has(sessionId)) {
+              state.sessions.delete(sessionId);
               this.sessionIdToTabId.delete(sessionId);
               this.callbacks.emitEvent({
                 type: 'cdp.evt',
@@ -439,6 +491,12 @@ export class CdpBridge {
                 params: { sessionId, targetId: state.targetId },
                 ...(parentSessionId ? { sessionId: parentSessionId } : {}),
               });
+              if (state.sessions.size === 0) {
+                // Last session for this tab: release the chrome.debugger attachment.
+                await this.detachTab(tabId, 'cdp_detach');
+              }
+              const summaries = await this.getTabSummaries();
+              this.callbacks.onTabsChanged?.(summaries, this.policy.getMode());
               return {};
             }
           }
@@ -461,11 +519,13 @@ export class CdpBridge {
         if (created.id === undefined) {
           throw new Error('Failed to create browser tab');
         }
+        // Resolve Chrome's real targetId before answering so callers never see a synthetic id.
+        await this.refreshRealTargetIds();
         // Always authorize tabs created by the Agent itself, even in manual mode.
         this.policy.authorizeTab(created.id);
         if (this.autoAttach) {
           // Attach BEFORE returning targetId so Chrome's real targetId is resolved and matches
-          // the Target.attachedToTarget event Playwright expects in CRBrowser._crPages.
+          // the Target.attachedToTarget event the CDP client expects.
           await this.tryAttachTab(created.id, true);
         }
         const targetInfo = this.buildTargetInfo(created);
@@ -524,7 +584,7 @@ export class CdpBridge {
       case 'Target.disposeBrowserContext':
       case 'Storage.clearCookies':
       case 'Storage.setCookies': {
-        // Safe no-op shims for browser-level commands Playwright may issue during connectOverCDP.
+        // Safe no-op shims for browser-level commands CDP clients may issue.
         return {};
       }
 
@@ -595,13 +655,17 @@ export class CdpBridge {
       this.childSessionToTabId.delete(childSid);
     }
 
-    const outgoingSessionId = source.sessionId ?? state.sessionId;
-    this.callbacks.emitEvent({
-      type: 'cdp.evt',
-      method,
-      params: params ?? {},
-      sessionId: outgoingSessionId,
-    });
+    // Child-session events belong to exactly that child session; root events are shared by
+    // every CDP session attached to this tab so a second client never goes blind.
+    const outgoingSessionIds = source.sessionId !== undefined ? [source.sessionId] : [...state.sessions];
+    for (const outgoingSessionId of outgoingSessionIds) {
+      this.callbacks.emitEvent({
+        type: 'cdp.evt',
+        method,
+        params: params ?? {},
+        sessionId: outgoingSessionId,
+      });
+    }
   }
 
   private handleDebuggerDetach(tabId: number, reason: string): void {
@@ -618,15 +682,15 @@ export class CdpBridge {
     if (!state) return;
 
     this.attachedByTabId.delete(tabId);
-    this.sessionIdToTabId.delete(state.sessionId);
-    for (const aliasSid of state.aliasSessions) {
-      this.sessionIdToTabId.delete(aliasSid);
+    for (const sessionId of state.sessions) {
+      this.sessionIdToTabId.delete(sessionId);
       this.callbacks.emitEvent({
         type: 'cdp.evt',
         method: 'Target.detachedFromTarget',
-        params: { sessionId: aliasSid, targetId: state.targetId },
+        params: { sessionId, targetId: state.targetId },
       });
     }
+    state.sessions.clear();
     for (const childSid of state.childSessions) {
       this.childSessionToTabId.delete(childSid);
       this.callbacks.emitEvent({
@@ -635,20 +699,13 @@ export class CdpBridge {
         params: { sessionId: childSid },
       });
     }
+    state.childSessions.clear();
     this.detachReasons.set(tabId, reason);
-
-    this.callbacks.emitEvent({
-      type: 'cdp.evt',
-      method: 'Target.detachedFromTarget',
-      params: {
-        sessionId: state.sessionId,
-        targetId: state.targetId,
-      },
-    });
   }
 
   private async handleTabCreated(tab: ChromeTabLike): Promise<void> {
     if (tab.id === undefined) return;
+    await this.refreshRealTargetIds();
     const url = this.resolveTabUrl(tab);
     if (!this.policy.isAuthorized(tab.id, url)) {
       const summaries = await this.getTabSummaries();
@@ -751,6 +808,7 @@ export class CdpBridge {
   }
 
   private async attachAllAuthorizedTabs(): Promise<void> {
+    await this.refreshRealTargetIds();
     const tabs = await this.safeQueryTabs();
     for (const tab of tabs) {
       if (tab.id === undefined) continue;
@@ -767,15 +825,18 @@ export class CdpBridge {
       const state = await this.attachTabOrThrow(tabId);
       if (emitAttachedEvent && this.autoAttachFlatten) {
         const tab = await this.api.tabs.get(tabId);
-        this.callbacks.emitEvent({
-          type: 'cdp.evt',
-          method: 'Target.attachedToTarget',
-          params: {
-            sessionId: state.sessionId,
-            targetInfo: this.buildTargetInfo(tab),
-            waitingForDebugger: false,
-          },
-        });
+        const sessionId = state.sessions.values().next().value;
+        if (sessionId !== undefined) {
+          this.callbacks.emitEvent({
+            type: 'cdp.evt',
+            method: 'Target.attachedToTarget',
+            params: {
+              sessionId,
+              targetInfo: this.buildTargetInfo(tab),
+              waitingForDebugger: false,
+            },
+          });
+        }
       }
       return state;
     } catch (err) {
@@ -801,8 +862,8 @@ export class CdpBridge {
     await this.api.debugger.attach({ tabId }, '1.3');
 
     // Query Chrome's real targetId so Target.attachedToTarget matches Page.getFrameTree().frameTree.frame.id.
-    // Playwright's CRPage._sessionForFrame() keys the main frame session by targetInfo.targetId.
-    let targetId = this.resolveTargetIdForTab(tabId);
+    const previousTargetId = this.resolveTargetIdForTab(tabId);
+    let targetId = previousTargetId;
     try {
       const infoRes = await this.api.debugger.sendCommand({ tabId }, 'Target.getTargetInfo');
       const realId = (infoRes?.targetInfo as { targetId?: unknown } | undefined)?.targetId;
@@ -811,15 +872,37 @@ export class CdpBridge {
         this.recordTargetIdMapping(tabId, realId);
       }
     } catch {
-      // Keep fallback tab-<id> mapping when running against a minimal mock.
+      // Keep the current mapping when running against a minimal mock.
+    }
+
+    if (targetId !== previousTargetId) {
+      // The synthetic `tab-<id>` placeholder became a real Chrome target: retire the
+      // placeholder so discovery clients never list the same tab twice.
+      const previousKnown = this.knownTargets.get(tabId);
+      if (previousKnown) {
+        this.knownTargets.delete(tabId);
+        if (this.discoverTargets) {
+          this.callbacks.emitEvent({
+            type: 'cdp.evt',
+            method: 'Target.targetDestroyed',
+            params: { targetId: previousTargetId },
+          });
+        }
+      }
+      if (this.discoverTargets) {
+        this.callbacks.emitEvent({
+          type: 'cdp.evt',
+          method: 'Target.targetCreated',
+          params: { targetInfo: this.buildTargetInfo(tab) },
+        });
+      }
     }
 
     const sessionId = `abb-s-${this.nextSessionSeq++}`;
     const state: AttachedTabState = {
       tabId,
       targetId,
-      sessionId,
-      aliasSessions: new Set(),
+      sessions: new Set([sessionId]),
       url,
       title: tab.title ?? '',
       childSessions: new Set(),
@@ -831,6 +914,7 @@ export class CdpBridge {
   }
 
   private async listAuthorizedTargetInfos(): Promise<CdpTargetInfo[]> {
+    await this.refreshRealTargetIds();
     const tabs = await this.safeQueryTabs();
     const out: CdpTargetInfo[] = [];
     for (const tab of tabs) {

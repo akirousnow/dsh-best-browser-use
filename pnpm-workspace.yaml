@@ -1,5 +1,9 @@
 packages:
   - "packages/*"
 
+# The pnpm store lives outside this workspace, which is read-only in some hosts.
+# Scripts must not attempt a dependency re-install before running.
+verifyDepsBeforeRun: false
+
 allowBuilds:
   esbuild: true

@@ -1,9 +1,9 @@
 {
   "name": "agent-browser-bridge",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "DSH extension and standalone CDP bridge allowing AI agents to control the user's real browser with zero debugging flags.",
+  "description": "DSH extension and standalone CDP bridge that lets AI agents drive the user's real browser through agent-browser, with zero debugging flags.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -13,7 +13,7 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "pnpm --filter @agent-browser-bridge/protocol build && pnpm --filter @agent-browser-bridge/relay build && pnpm --filter @agent-browser-bridge/engine build && pnpm --filter @agent-browser-bridge/mcp build && pnpm --filter @agent-browser-bridge/cli build && pnpm --filter @agent-browser-bridge/extension build && pnpm --filter @local/agent-browser-bridge build",
+    "build": "pnpm --filter @agent-browser-bridge/protocol build && pnpm --filter @agent-browser-bridge/relay build && pnpm --filter @agent-browser-bridge/engine build && pnpm --filter @agent-browser-bridge/cli build && pnpm --filter @agent-browser-bridge/extension build && pnpm --filter @local/agent-browser-bridge build",
     "typecheck": "tsc --noEmit -p tsconfig.typecheck.json",
     "test": "vitest run",
     "pack:ext": "pnpm --filter @agent-browser-bridge/extension pack"

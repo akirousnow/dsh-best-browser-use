@@ -111,4 +111,139 @@ describe('TabPolicy and CdpBridge (MV3 extension core)', () => {
     expect(state.tabs.size).toBe(tabCountBefore);
     expect(state.attachedTabIds.size).toBe(0);
   });
+
+  it('fans root tab events out to every session and only releases the debugger when the last one detaches', async () => {
+    const events: CdpEventMessage[] = [];
+    const { api, state } = createMockChromeApi([
+      { id: 1, url: 'https://app.example.com', title: 'App', active: true },
+    ]);
+    const bridge = new CdpBridge(api, new TabPolicy('auto'), {
+      emitEvent: (evt) => events.push(evt),
+    });
+    bridge.bindListeners();
+
+    const first = await bridge.handleCommand({
+      type: 'cdp.cmd',
+      id: 1,
+      method: 'Target.attachToTarget',
+      params: { targetId: 'tab-1', flatten: true },
+    });
+    const second = await bridge.handleCommand({
+      type: 'cdp.cmd',
+      id: 2,
+      method: 'Target.attachToTarget',
+      params: { targetId: 'tab-1', flatten: true },
+    });
+    const firstSession = String((first.result as { sessionId: string }).sessionId);
+    const secondSession = String((second.result as { sessionId: string }).sessionId);
+    expect(firstSession).not.toBe(secondSession);
+    // One chrome.debugger attachment serves both CDP sessions.
+    expect(state.attachedTabIds.size).toBe(1);
+
+    events.length = 0;
+    state.triggerDebuggerEvent({ tabId: 1 }, 'Page.loadEventFired', { timestamp: 1 });
+    const loadEvents = events.filter((event) => event.method === 'Page.loadEventFired');
+    expect(loadEvents.map((event) => event.sessionId).sort()).toEqual(
+      [firstSession, secondSession].sort(),
+    );
+
+    // Child (OOPIF) events stay scoped to the child session only.
+    state.triggerDebuggerEvent({ tabId: 1 }, 'Target.attachedToTarget', {
+      sessionId: 'child-1',
+      targetInfo: { targetId: 'iframe-1', type: 'iframe', url: 'https://iframe.example.com' },
+    });
+    events.length = 0;
+    state.triggerDebuggerEvent({ tabId: 1, sessionId: 'child-1' }, 'Runtime.consoleAPICalled', {});
+    expect(events.map((event) => event.sessionId)).toEqual(['child-1']);
+
+    await bridge.handleCommand({
+      type: 'cdp.cmd',
+      id: 3,
+      method: 'Target.detachFromTarget',
+      params: { sessionId: firstSession },
+    });
+    expect(state.attachedTabIds.has(1)).toBe(true);
+
+    await bridge.handleCommand({
+      type: 'cdp.cmd',
+      id: 4,
+      method: 'Target.detachFromTarget',
+      params: { sessionId: secondSession },
+    });
+    expect(state.attachedTabIds.has(1)).toBe(false);
+  });
+
+  it('resolves real Chrome target ids without attaching and retires a synthetic placeholder on upgrade', async () => {
+    const { api, state } = createMockChromeApi([
+      { id: 7, url: 'https://app.example.com', title: 'App', active: true },
+    ]);
+    const bridge = new CdpBridge(api, new TabPolicy('auto'), { emitEvent: () => {} });
+    bridge.bindListeners();
+
+    const targets = await bridge.handleCommand({ type: 'cdp.cmd', id: 1, method: 'Target.getTargets' });
+    const infos = (targets.result as { targetInfos: Array<{ targetId: string }> }).targetInfos;
+    expect(infos.map((info) => info.targetId)).toEqual([state.realTargetIdFor(7)]);
+    // Reading Chrome's target inventory never attaches the debugger.
+    expect(state.attachedTabIds.size).toBe(0);
+
+    // A Chrome build without chrome.debugger.getTargets starts from a `tab-<id>` placeholder.
+    const fallback = createMockChromeApi([
+      { id: 9, url: 'https://docs.example.com', title: 'Docs', active: true },
+    ]);
+    delete (fallback.api.debugger as { getTargets?: unknown }).getTargets;
+    fallback.state.commandHandler = async (target) => ({
+      targetInfo: {
+        targetId: fallback.state.realTargetIdFor(target.tabId ?? 9),
+        type: 'page',
+        title: 'Docs',
+        url: 'https://docs.example.com',
+        attached: true,
+        canAccessOpener: false,
+      },
+    });
+
+    const upgradeEvents: CdpEventMessage[] = [];
+    const fallbackBridge = new CdpBridge(fallback.api, new TabPolicy('auto'), {
+      emitEvent: (evt) => upgradeEvents.push(evt),
+    });
+    fallbackBridge.bindListeners();
+
+    await fallbackBridge.handleCommand({
+      type: 'cdp.cmd',
+      id: 1,
+      method: 'Target.setDiscoverTargets',
+      params: { discover: true },
+    });
+    expect(
+      upgradeEvents.some(
+        (event) =>
+          event.method === 'Target.targetCreated' &&
+          (event.params?.targetInfo as { targetId?: string } | undefined)?.targetId === 'tab-9',
+      ),
+    ).toBe(true);
+
+    upgradeEvents.length = 0;
+    const attach = await fallbackBridge.handleCommand({
+      type: 'cdp.cmd',
+      id: 2,
+      method: 'Target.attachToTarget',
+      params: { targetId: 'tab-9', flatten: true },
+    });
+    expect((attach.result as { sessionId: string }).sessionId).toBeTruthy();
+    expect(
+      upgradeEvents.some(
+        (event) =>
+          event.method === 'Target.targetDestroyed' &&
+          (event.params as { targetId?: string } | undefined)?.targetId === 'tab-9',
+      ),
+    ).toBe(true);
+    expect(
+      upgradeEvents.some(
+        (event) =>
+          event.method === 'Target.targetCreated' &&
+          (event.params?.targetInfo as { targetId?: string } | undefined)?.targetId ===
+            fallback.state.realTargetIdFor(9),
+      ),
+    ).toBe(true);
+  });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@agent-browser-bridge/engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "exports": {
     ".": {
@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "@agent-browser-bridge/protocol": "workspace:*",
-    "@agent-browser-bridge/relay": "workspace:*",
-    "playwright-core": "^1.52.0"
+    "@agent-browser-bridge/relay": "workspace:*"
   }
 }

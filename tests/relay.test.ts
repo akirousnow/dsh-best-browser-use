@@ -32,6 +32,15 @@ function sendCdp(
   });
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('waitFor timed out');
+}
+
 describe('RelayServer security, multiplexing, reconnect & large payloads', () => {
   const servers: RelayServer[] = [];
   const extensions: MockExtensionClient[] = [];
@@ -210,6 +219,34 @@ describe('RelayServer security, multiplexing, reconnect & large payloads', () =>
 
     const recovered = await sendCdp(cdp2, { id: 6, method: 'Browser.getVersion' });
     expect((recovered.result as { protocolVersion: string }).protocolVersion).toBe('1.3');
+  });
+
+  it('releases the debugger attachment when the last CDP client disconnects', async () => {
+    const relay = new RelayServer({ host: '127.0.0.1', port: 0, logger: { info() {}, warn() {}, error() {} } });
+    servers.push(relay);
+    const { port, cdpWsUrl } = await relay.start();
+
+    const ext = new MockExtensionClient({
+      wsUrl: `ws://127.0.0.1:${port}/ext`,
+      origin: 'chrome-extension://abcdefghijklmnop',
+    });
+    extensions.push(ext);
+    await ext.connect();
+
+    const cdp = await openRawWs(cdpWsUrl);
+    sockets.push(cdp);
+
+    const attachRes = await sendCdp(cdp, {
+      id: 1,
+      method: 'Target.attachToTarget',
+      params: { targetId: 'tab-1', flatten: true },
+    });
+    expect((attachRes.result as { sessionId: string }).sessionId).toBeTruthy();
+    expect(ext.chromeState.attachedTabIds.has(1)).toBe(true);
+
+    cdp.close();
+    await waitFor(() => !ext.chromeState.attachedTabIds.has(1));
+    expect(ext.chromeState.attachedTabIds.has(1)).toBe(false);
   });
 
   it('closes silent extension sockets after heartbeatTimeoutMs', async () => {

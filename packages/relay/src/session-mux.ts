@@ -87,18 +87,37 @@ export class SessionMux {
   removeClient(clientId: string): void {
     const state = this.clients.get(clientId);
     if (state) {
-      for (const sid of state.ownedSessions) {
+      const owned = [...state.ownedSessions];
+      for (const sid of owned) {
         if (this.sessionOwner.get(sid) === clientId) {
           this.sessionOwner.delete(sid);
         }
       }
+      state.ownedSessions.clear();
+      state.rootTargets.clear();
+      state.sessionToRootTarget.clear();
       this.clients.delete(clientId);
+      // Hand the tab back to the extension: without this the last CDP client leaving would
+      // keep chrome.debugger attached and leave the user staring at a debug banner.
+      this.releaseSessions(owned);
     }
     for (const [relayReqId, entry] of this.pending.entries()) {
       if (entry.clientId === clientId) {
         clearTimeout(entry.timer);
         this.pending.delete(relayReqId);
       }
+    }
+  }
+
+  /** Fire-and-forget `Target.detachFromTarget` frames for sessions a client no longer uses. */
+  private releaseSessions(sessionIds: readonly string[]): void {
+    for (const sessionId of sessionIds) {
+      this.sendToExtension({
+        type: 'cdp.cmd',
+        id: this.nextRelayReqId++,
+        method: 'Target.detachFromTarget',
+        params: { sessionId },
+      });
     }
   }
 
@@ -200,14 +219,17 @@ export class SessionMux {
     const client = this.clients.get(entry.clientId);
     if (!client) return;
 
-    // Track browser-target sessions owned privately by one CDP client (e.g. Playwright newCDPSession)
-    if (
-      msg.error === undefined &&
-      entry.method === 'Target.attachToBrowserTarget' &&
-      typeof msg.result?.sessionId === 'string'
-    ) {
-      client.ownedSessions.add(msg.result.sessionId);
-      this.sessionOwner.set(msg.result.sessionId, entry.clientId);
+    // Track sessions owned privately by one CDP client (browser target or per-tab attaches)
+    if (msg.error === undefined) {
+      const ownedSessionId =
+        (entry.method === 'Target.attachToBrowserTarget' || entry.method === 'Target.attachToTarget') &&
+        typeof msg.result?.sessionId === 'string'
+          ? msg.result.sessionId
+          : undefined;
+      if (ownedSessionId !== undefined) {
+        client.ownedSessions.add(ownedSessionId);
+        this.sessionOwner.set(ownedSessionId, entry.clientId);
+      }
     }
 
     const sessionId = msg.sessionId ?? entry.sessionId;
@@ -228,6 +250,19 @@ export class SessionMux {
 
   /** Broadcast a `cdp.evt` frame from the Extension to connected CDP clients with per-client target dedup. */
   broadcastExtensionEvent(msg: CdpEventMessage): void {
+    // A session the extension reports as detached is no longer owned by any client.
+    if (msg.method === 'Target.detachedFromTarget') {
+      const detachedSid =
+        typeof msg.params?.sessionId === 'string' ? msg.params.sessionId : undefined;
+      if (detachedSid !== undefined) {
+        const ownerId = this.sessionOwner.get(detachedSid);
+        if (ownerId !== undefined) {
+          this.clients.get(ownerId)?.ownedSessions.delete(detachedSid);
+          this.sessionOwner.delete(detachedSid);
+        }
+      }
+    }
+
     const payload = JSON.stringify({
       method: msg.method,
       params: msg.params ?? {},

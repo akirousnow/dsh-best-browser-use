@@ -58,8 +58,8 @@ describe('DSH Client $ Browser Tab Quick-Picker & ReferenceCodec', () => {
           port: 9229,
           extPath: '/ext',
           tabs: [
-            { tabId: 10, tabRef: '$t1', url: 'https://github.com/akirousnow/dsh-best-browser-use', title: 'GitHub Repo', eligible: true, authorized: true, active: false, attached: true },
-            { tabId: 20, tabRef: '$t2', url: 'https://linux.do/t/topic/3211681', title: 'LINUX DO - 新的理想型社区', eligible: true, authorized: true, active: true, attached: true },
+            { tabId: 10, tabRef: '$t1', url: 'https://github.com/akirousnow/dsh-best-browser-use', title: 'GitHub Repo', eligible: true, authorized: true, active: false, attached: true, targetId: 'tab-10' },
+            { tabId: 20, tabRef: '$t2', url: 'https://linux.do/t/topic/3211681', title: 'LINUX DO - 新的理想型社区', eligible: true, authorized: true, active: true, attached: true, targetId: 'C3EC28BD334A13835EFF196007103FC3' },
           ],
         }),
       }),
@@ -159,16 +159,28 @@ describe('DSH Client $ Browser Tab Quick-Picker & ReferenceCodec', () => {
     expect(registeredSource!.showGroupTitle).toBe(false);
     expect(await registeredSource!.candidates()).toEqual([]);
 
-    // Verify codec.serialize resolves live tabRef/title/URL cleanly for the model
+    // Verify codec.serialize resolves live tabRef/title/URL cleanly for the model,
+    // including the CDP targetId so the model can address the tab directly.
     const refPayload = JSON.stringify({
       tabId: 20,
       tabRef: '$t99', // stale ref; live store knows tabId 20 is now $t2!
       title: 'Old Title',
       url: 'https://linux.do/t/topic/3211681',
+      targetId: '',
     });
     const serialized = await registeredSource!.codec.serialize(refPayload);
-    expect(serialized).toBe('[Browser Tab $t2: "LINUX DO - 新的理想型社区" (https://linux.do/t/topic/3211681)]');
+    expect(serialized).toBe(
+      '[Browser Tab $t2 (targetId: C3EC28BD334A13835EFF196007103FC3): "LINUX DO - 新的理想型社区" (https://linux.do/t/topic/3211681)]',
+    );
     expect(registeredSource!.codec.clipboardText(refPayload)).toBe('$t99 Old Title');
+
+    // A synthetic `tab-<id>` placeholder is not worth showing to the model.
+    const placeholder = await registeredSource!.codec.serialize(
+      JSON.stringify({ tabId: 10, tabRef: '$t1', title: 'GitHub Repo', url: 'https://github.com/x', targetId: 'tab-10' }),
+    );
+    expect(placeholder).toBe(
+      '[Browser Tab $t1: "GitHub Repo" (https://github.com/akirousnow/dsh-best-browser-use)]',
+    );
 
     // Clean disposal
     for (const c of cleanups) c();

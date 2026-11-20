@@ -21,7 +21,7 @@ async function main() {
     format: 'esm',
     platform: 'node',
     target: 'node22',
-    external: ['playwright-core', 'ws'],
+    external: ['ws'],
     sourcemap: false,
   });
 
