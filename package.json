@@ -1,6 +1,6 @@
 {
   "name": "agent-browser-bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "DSH extension and standalone CDP bridge allowing AI agents to control the user's real browser with zero debugging flags.",

@@ -463,6 +463,11 @@ export class CdpBridge {
         }
         // Always authorize tabs created by the Agent itself, even in manual mode.
         this.policy.authorizeTab(created.id);
+        if (this.autoAttach) {
+          // Attach BEFORE returning targetId so Chrome's real targetId is resolved and matches
+          // the Target.attachedToTarget event Playwright expects in CRBrowser._crPages.
+          await this.tryAttachTab(created.id, true);
+        }
         const targetInfo = this.buildTargetInfo(created);
         this.knownTargets.set(created.id, targetInfo);
         if (this.discoverTargets) {
@@ -471,9 +476,6 @@ export class CdpBridge {
             method: 'Target.targetCreated',
             params: { targetInfo },
           });
-        }
-        if (this.autoAttach) {
-          await this.tryAttachTab(created.id, true);
         }
         const summaries = await this.getTabSummaries();
         this.callbacks.onTabsChanged?.(summaries, this.policy.getMode());

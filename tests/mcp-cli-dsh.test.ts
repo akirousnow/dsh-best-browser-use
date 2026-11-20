@@ -164,11 +164,15 @@ describe('MCP Server, CLI (bb), and Native DSH Plugin Bundle', () => {
     expect(previewSvg).toContain('viewBox="0 0 640 300"');
     expect(previewSvg).not.toMatch(/<script|<style|<text|<foreignObject/i);
 
-    // Verify client.js does not import @deepseek-ai/dsh-client-ui-primitives
+    // Verify client.js does not import @deepseek-ai/dsh-client-ui-primitives and wires $ tab picker
     const clientJs = await readFile(join(dshDir, 'client.js'), 'utf8');
     expect(clientJs).toContain("id: '@local/agent-browser-bridge'");
     expect(clientJs).not.toContain('@deepseek-ai/dsh-client-ui-primitives');
     expect(clientJs).toContain('--dsw-alias-');
+    expect(clientJs).toContain('conversation.input.overlay');
+    expect(clientJs).toContain('agent-browser-bridge-dollar-tab-picker');
+    expect(clientJs).toContain('slash/input-insert-reference');
+    expect(clientJs).toContain('slash/input-insert-text');
 
     // Verify packaged extension zip exists and starts with valid PK zip signature
     const zipBuf = await readFile(join(dshDir, 'assets/agent-browser-bridge-extension.zip'));

@@ -372,11 +372,13 @@ async function getRuntimeState(): Promise<ExtensionRuntimeState> {
 // Safety-net alarm: wakes Service Worker every 30s if Chrome ever suspends it, and reconnects if dropped.
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== KEEPALIVE_ALARM) return;
-  if (desiredConnected && (!ws || ws.readyState === WebSocket.CLOSED)) {
-    void connect();
-  } else if (ws && ws.readyState === WebSocket.OPEN) {
-    sendToRelay({ type: 'ping', ts: Date.now() });
-  }
+  void bootPromise.then(() => {
+    if (desiredConnected && (!ws || ws.readyState === WebSocket.CLOSED)) {
+      void connect();
+    } else if (ws && ws.readyState === WebSocket.OPEN) {
+      sendToRelay({ type: 'ping', ts: Date.now() });
+    }
+  });
 });
 
 chrome.runtime.onMessage.addListener((message: Record<string, unknown>, _sender, sendResponse) => {
@@ -449,4 +451,4 @@ async function boot(): Promise<void> {
   }
 }
 
-void boot();
+const bootPromise = boot();

@@ -15,6 +15,14 @@ interface PendingCdpRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+interface ClientTrackingState {
+  ws: WebSocket;
+  autoAttach: boolean;
+  rootTargets: Set<string>;
+  sessionToRootTarget: Map<string, string>;
+  ownedSessions: Set<string>;
+}
+
 export interface SessionMuxOptions {
   commandTimeoutMs?: number;
   sendToExtension: (msg: CdpCommandMessage) => boolean;
@@ -25,11 +33,14 @@ export interface SessionMuxOptions {
  * active Browser Extension WebSocket connection.
  *
  * Each CDP client keeps its own independent request ID space; SessionMux rewrites IDs into
- * a globally unique monotonic sequence for the extension and demultiplexes responses back.
+ * a globally unique monotonic sequence for the extension, demultiplexes responses back, and
+ * deduplicates root-level Target.attachedToTarget events per client so connecting a second
+ * Playwright client never triggers "Duplicate target" assertions in an existing client.
  */
 export class SessionMux {
-  private readonly clients = new Map<string, WebSocket>();
+  private readonly clients = new Map<string, ClientTrackingState>();
   private readonly pending = new Map<number, PendingCdpRequest>();
+  private readonly sessionOwner = new Map<string, string>();
   private nextClientSeq = 1;
   private nextRelayReqId = 1;
   private readonly commandTimeoutMs: number;
@@ -50,7 +61,13 @@ export class SessionMux {
 
   addClient(ws: WebSocket): string {
     const clientId = `cdp-${this.nextClientSeq++}`;
-    this.clients.set(clientId, ws);
+    this.clients.set(clientId, {
+      ws,
+      autoAttach: false,
+      rootTargets: new Set(),
+      sessionToRootTarget: new Map(),
+      ownedSessions: new Set(),
+    });
 
     ws.on('message', (data) => {
       this.handleClientMessage(clientId, ws, data.toString('utf8'));
@@ -68,7 +85,15 @@ export class SessionMux {
   }
 
   removeClient(clientId: string): void {
-    this.clients.delete(clientId);
+    const state = this.clients.get(clientId);
+    if (state) {
+      for (const sid of state.ownedSessions) {
+        if (this.sessionOwner.get(sid) === clientId) {
+          this.sessionOwner.delete(sid);
+        }
+      }
+      this.clients.delete(clientId);
+    }
     for (const [relayReqId, entry] of this.pending.entries()) {
       if (entry.clientId === clientId) {
         clearTimeout(entry.timer);
@@ -100,6 +125,11 @@ export class SessionMux {
       return;
     }
 
+    const clientState = this.clients.get(clientId);
+    if (clientState && !parsed.sessionId && parsed.method === 'Target.setAutoAttach') {
+      clientState.autoAttach = Boolean(parsed.params?.autoAttach);
+    }
+
     // Intercept Browser.close when multiple clients are connected so one client disconnecting
     // does not detach tabs used by other agents.
     if (parsed.method === 'Browser.close' && this.clients.size > 1) {
@@ -123,9 +153,9 @@ export class SessionMux {
       const entry = this.pending.get(relayReqId);
       if (!entry) return;
       this.pending.delete(relayReqId);
-      const targetWs = this.clients.get(entry.clientId);
-      if (targetWs) {
-        this.sendJson(targetWs, {
+      const target = this.clients.get(entry.clientId);
+      if (target) {
+        this.sendJson(target.ws, {
           id: entry.clientReqId,
           ...(entry.sessionId !== undefined ? { sessionId: entry.sessionId } : {}),
           error: {
@@ -167,18 +197,28 @@ export class SessionMux {
     clearTimeout(entry.timer);
     this.pending.delete(msg.id);
 
-    const ws = this.clients.get(entry.clientId);
-    if (!ws) return;
+    const client = this.clients.get(entry.clientId);
+    if (!client) return;
+
+    // Track browser-target sessions owned privately by one CDP client (e.g. Playwright newCDPSession)
+    if (
+      msg.error === undefined &&
+      entry.method === 'Target.attachToBrowserTarget' &&
+      typeof msg.result?.sessionId === 'string'
+    ) {
+      client.ownedSessions.add(msg.result.sessionId);
+      this.sessionOwner.set(msg.result.sessionId, entry.clientId);
+    }
 
     const sessionId = msg.sessionId ?? entry.sessionId;
     if (msg.error !== undefined) {
-      this.sendJson(ws, {
+      this.sendJson(client.ws, {
         id: entry.clientReqId,
         ...(sessionId !== undefined ? { sessionId } : {}),
         error: msg.error,
       });
     } else {
-      this.sendJson(ws, {
+      this.sendJson(client.ws, {
         id: entry.clientReqId,
         ...(sessionId !== undefined ? { sessionId } : {}),
         result: msg.result ?? {},
@@ -186,28 +226,86 @@ export class SessionMux {
     }
   }
 
-  /** Broadcast a `cdp.evt` frame from the Extension to all connected CDP clients. */
+  /** Broadcast a `cdp.evt` frame from the Extension to connected CDP clients with per-client target dedup. */
   broadcastExtensionEvent(msg: CdpEventMessage): void {
     const payload = JSON.stringify({
       method: msg.method,
       params: msg.params ?? {},
       ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}),
     });
-    for (const ws of this.clients.values()) {
-      if (ws.readyState === ws.OPEN) {
-        ws.send(payload);
+
+    // Events scoped to a client-private browser session route only to that client.
+    if (msg.sessionId !== undefined) {
+      const ownerId = this.sessionOwner.get(msg.sessionId);
+      if (ownerId !== undefined) {
+        const owner = this.clients.get(ownerId);
+        if (owner && owner.ws.readyState === owner.ws.OPEN) {
+          owner.ws.send(payload);
+        }
+        return;
+      }
+    }
+
+    // Deduplicate root-level Target.attachedToTarget per client so multi-client autoAttach
+    // never trips Playwright's "Duplicate target" assertion on already-connected clients.
+    if (msg.sessionId === undefined && msg.method === 'Target.attachedToTarget') {
+      const targetInfo = msg.params?.targetInfo as { targetId?: unknown } | undefined;
+      const targetId = typeof targetInfo?.targetId === 'string' ? targetInfo.targetId : undefined;
+      const attachedSid = typeof msg.params?.sessionId === 'string' ? msg.params.sessionId : undefined;
+
+      for (const client of this.clients.values()) {
+        if (client.ws.readyState !== client.ws.OPEN) continue;
+        if (targetId && client.rootTargets.has(targetId)) {
+          continue;
+        }
+        if (targetId) {
+          client.rootTargets.add(targetId);
+          if (attachedSid) {
+            client.sessionToRootTarget.set(attachedSid, targetId);
+          }
+        }
+        client.ws.send(payload);
+      }
+      return;
+    }
+
+    if (msg.sessionId === undefined && msg.method === 'Target.detachedFromTarget') {
+      const detachedSid = typeof msg.params?.sessionId === 'string' ? msg.params.sessionId : undefined;
+      const explicitTargetId = typeof msg.params?.targetId === 'string' ? msg.params.targetId : undefined;
+      for (const client of this.clients.values()) {
+        const mappedTarget = detachedSid ? client.sessionToRootTarget.get(detachedSid) : undefined;
+        const targetId = explicitTargetId ?? mappedTarget;
+        if (detachedSid) client.sessionToRootTarget.delete(detachedSid);
+        if (targetId) client.rootTargets.delete(targetId);
+        if (client.ws.readyState === client.ws.OPEN) {
+          client.ws.send(payload);
+        }
+      }
+      return;
+    }
+
+    for (const client of this.clients.values()) {
+      if (client.ws.readyState === client.ws.OPEN) {
+        client.ws.send(payload);
       }
     }
   }
 
-  /** Reject all in-flight CDP requests when the extension disconnects. */
+  /** Reject all in-flight CDP requests and reset client target tracking when extension disconnects. */
   failAllPending(reason: string): void {
+    for (const client of this.clients.values()) {
+      client.rootTargets.clear();
+      client.sessionToRootTarget.clear();
+      client.ownedSessions.clear();
+    }
+    this.sessionOwner.clear();
+
     for (const [relayReqId, entry] of this.pending.entries()) {
       clearTimeout(entry.timer);
       this.pending.delete(relayReqId);
-      const ws = this.clients.get(entry.clientId);
-      if (ws) {
-        this.sendJson(ws, {
+      const client = this.clients.get(entry.clientId);
+      if (client) {
+        this.sendJson(client.ws, {
           id: entry.clientReqId,
           ...(entry.sessionId !== undefined ? { sessionId: entry.sessionId } : {}),
           error: { code: -32000, message: reason },
@@ -219,9 +317,9 @@ export class SessionMux {
   /** Close all CDP client sockets cleanly during Relay shutdown. */
   closeAll(code = 1001, reason = 'Relay shutting down'): void {
     this.failAllPending(reason);
-    for (const ws of this.clients.values()) {
+    for (const client of this.clients.values()) {
       try {
-        ws.close(code, reason);
+        client.ws.close(code, reason);
       } catch {
         // Ignore already-closed sockets.
       }

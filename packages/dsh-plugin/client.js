@@ -4,7 +4,10 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const ReactDOM = require('react-dom');
     const h = React.createElement;
-    const { useState, useEffect, useRef, useCallback } = React;
+    const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+    const SOURCE_NAME = 'browser-tabs';
+    const REF_PLACEHOLDER = '\uFFFC';
 
     const STRINGS = {
       en: {
@@ -19,7 +22,7 @@ window.__ModuleLoader__.load({
         modeManual: 'Manual tabs',
         relayEndpoint: 'Extension endpoint',
         tokenRequiredHint: 'Token authentication is required. Enter the configured Relay token in the extension popup.',
-        remoteHostHint: 'Replace <server-host> with this machine\'s reachable IP or domain.',
+        remoteHostHint: "Replace <server-host> with this machine's reachable IP or domain.",
         copy: 'Copy',
         copied: 'Copied',
         copyFailed: 'Copy failed',
@@ -37,6 +40,11 @@ window.__ModuleLoader__.load({
         downloadZip: 'Download Chrome extension (.zip)',
         installSteps: 'Unzip → open chrome://extensions (or edge:// / brave://) → enable Developer mode → Load unpacked.',
         close: 'Close',
+        pickerTitle: 'Browser tabs',
+        pickerKeys: '↑↓ · Enter · Esc',
+        pickerAria: 'Browser tab suggestions',
+        pickerHint: 'Tip: type $ in the composer to quickly pick a browser tab.',
+        activeTabBadge: 'Active',
       },
       zh: {
         title: '真实浏览器桥接',
@@ -68,6 +76,11 @@ window.__ModuleLoader__.load({
         downloadZip: '下载 Chrome 扩展包 (.zip)',
         installSteps: '解压后打开 chrome://extensions（或 edge:// / brave://）→ 开启开发者模式 → 加载已解压扩展。',
         close: '关闭',
+        pickerTitle: '浏览器标签页',
+        pickerKeys: '↑↓ 选择 · Enter 插入 · Esc 关闭',
+        pickerAria: '浏览器标签页快捷选择',
+        pickerHint: '提示：在输入框键入 $ 可快速搜索并插入标签页。',
+        activeTabBadge: '当前',
       },
     };
 
@@ -82,6 +95,131 @@ window.__ModuleLoader__.load({
       } catch {
         return url || '';
       }
+    }
+
+    function truncateText(text, maxLen) {
+      const s = String(text || '').trim();
+      if (s.length <= maxLen) return s;
+      return `${s.slice(0, maxLen - 1)}…`;
+    }
+
+    function normalizeAuthorizedTabs(status) {
+      const raw = status?.tabs || [];
+      let seq = 1;
+      const out = [];
+      for (const tab of raw) {
+        if (!tab || !tab.eligible || !tab.authorized) continue;
+        const tabRef = typeof tab.tabRef === 'string' && tab.tabRef ? tab.tabRef : `$t${seq}`;
+        seq += 1;
+        out.push({
+          ...tab,
+          tabRef,
+          host: shortHost(tab.url),
+        });
+      }
+      return out;
+    }
+
+    /**
+     * Detect an active `$query` token immediately preceding the caret.
+     * Requires `$` at offset 0 or preceded by whitespace; stops on whitespace or chip placeholder.
+     */
+    function detectDollarTabTrigger(detectText, caret) {
+      if (typeof detectText !== 'string' || typeof caret !== 'number' || caret <= 0) return null;
+      const bounded = Math.min(caret, detectText.length);
+      const before = detectText.slice(0, bounded);
+      const dollarAt = before.lastIndexOf('$');
+      if (dollarAt < 0) return null;
+      if (dollarAt > 0 && !/\s/.test(before[dollarAt - 1])) return null;
+      const query = before.slice(dollarAt + 1);
+      if (/[\s\uFFFC]/.test(query)) return null;
+      return {
+        start: dollarAt,
+        end: bounded,
+        query,
+      };
+    }
+
+    /**
+     * Filter and rank authorized tabs for a `$query`.
+     * Matches exact/prefix `$tN` / `tN` / `N` first, then title/host/URL substring, then subsequence.
+     */
+    function filterBrowserTabs(tabs, rawQuery) {
+      if (!Array.isArray(tabs) || tabs.length === 0) return [];
+      const q = String(rawQuery || '').trim().toLowerCase();
+      if (!q) return tabs;
+
+      const stripped = q.startsWith('$') ? q.slice(1) : q;
+      const scored = [];
+      for (let i = 0; i < tabs.length; i++) {
+        const tab = tabs[i];
+        const refLower = String(tab.tabRef || `$t${i + 1}`).toLowerCase(); // "$t4"
+        const refNoDollar = refLower.startsWith('$') ? refLower.slice(1) : refLower; // "t4"
+        const numOnly = refNoDollar.startsWith('t') ? refNoDollar.slice(1) : refNoDollar; // "4"
+        const titleLower = String(tab.title || '').toLowerCase();
+        const urlLower = String(tab.url || '').toLowerCase();
+        const hostLower = String(tab.host || '').toLowerCase();
+
+        let score = -1;
+        if (stripped === refNoDollar || stripped === numOnly || q === refLower) {
+          score = 1000;
+        } else if (refNoDollar.startsWith(stripped) || numOnly.startsWith(stripped)) {
+          score = 800;
+        } else if (titleLower.startsWith(stripped) || hostLower.startsWith(stripped)) {
+          score = 600;
+        } else if (titleLower.includes(stripped)) {
+          score = 450;
+        } else if (hostLower.includes(stripped) || urlLower.includes(stripped)) {
+          score = 300;
+        } else {
+          // Ordered subsequence check on title + host
+          const hay = `${titleLower} ${hostLower}`;
+          let qi = 0;
+          for (let hi = 0; hi < hay.length && qi < stripped.length; hi++) {
+            if (hay[hi] === stripped[qi]) qi++;
+          }
+          if (qi === stripped.length && stripped.length >= 2) {
+            score = 150;
+          }
+        }
+        if (score >= 0) {
+          scored.push({ tab, score, index: i });
+        }
+      }
+      scored.sort((a, b) => b.score - a.score || a.index - b.index);
+      return scored.map((entry) => entry.tab);
+    }
+
+    function encodeTabRefPayload(tab) {
+      return JSON.stringify({
+        tabId: tab.tabId,
+        tabRef: tab.tabRef,
+        title: tab.title || '',
+        url: tab.url || '',
+      });
+    }
+
+    function decodeTabRefPayload(rawRef) {
+      try {
+        const parsed = JSON.parse(rawRef);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            tabId: typeof parsed.tabId === 'number' ? parsed.tabId : undefined,
+            tabRef: typeof parsed.tabRef === 'string' ? parsed.tabRef : '$t1',
+            title: typeof parsed.title === 'string' ? parsed.title : '',
+            url: typeof parsed.url === 'string' ? parsed.url : '',
+          };
+        }
+      } catch {
+        // Fallback if plain ref string
+      }
+      return { tabId: undefined, tabRef: String(rawRef || ''), title: '', url: '' };
+    }
+
+    function formatSerializedTab(tab) {
+      const title = (tab.title || shortHost(tab.url) || 'Untitled').replace(/\s+/g, ' ').trim();
+      const urlPart = tab.url ? ` (${tab.url})` : '';
+      return `[Browser Tab ${tab.tabRef}: "${title}"${urlPart}]`;
     }
 
     function formatDisplayEndpoint(status) {
@@ -103,7 +241,7 @@ window.__ModuleLoader__.load({
           await navigator.clipboard.writeText(text);
           return true;
         } catch {
-          // Fall through to execCommand fallback (e.g. non-secure HTTP LAN origins).
+          // Fall through to execCommand fallback.
         }
       }
       try {
@@ -121,6 +259,99 @@ window.__ModuleLoader__.load({
       } catch {
         return false;
       }
+    }
+
+    /** Shared lightweight status store so Dock, Hero, and $ Tab Picker share one poll loop. */
+    function createBridgeStatusStore() {
+      let state = { loadState: 'loading', status: null, authorizedTabs: [], updatedAt: 0 };
+      const listeners = new Set();
+      let seq = 0;
+      let timer = null;
+      let started = false;
+
+      const emit = () => {
+        for (const fn of listeners) {
+          try {
+            fn();
+          } catch {
+            // Ignore listener errors.
+          }
+        }
+      };
+
+      const fetchNow = async () => {
+        const mySeq = ++seq;
+        try {
+          const res = await fetch('/api/agent-browser-bridge/status', { cache: 'no-store' });
+          if (mySeq !== seq) return state;
+          if (!res.ok) {
+            state = { loadState: 'error', status: null, authorizedTabs: [], updatedAt: Date.now() };
+            emit();
+            return state;
+          }
+          const data = await res.json();
+          if (mySeq !== seq) return state;
+          state = {
+            loadState: 'ok',
+            status: data,
+            authorizedTabs: normalizeAuthorizedTabs(data),
+            updatedAt: Date.now(),
+          };
+          emit();
+          return state;
+        } catch {
+          if (mySeq !== seq) return state;
+          state = { loadState: 'error', status: null, authorizedTabs: [], updatedAt: Date.now() };
+          emit();
+          return state;
+        }
+      };
+
+      const onResume = () => {
+        if (document.visibilityState === 'visible') {
+          void fetchNow();
+        }
+      };
+
+      const start = () => {
+        if (started) return;
+        started = true;
+        void fetchNow();
+        timer = window.setInterval(() => {
+          if (document.visibilityState === 'visible') {
+            void fetchNow();
+          }
+        }, 5000);
+        document.addEventListener('visibilitychange', onResume);
+        window.addEventListener('focus', onResume);
+      };
+
+      const stop = () => {
+        if (!started) return;
+        started = false;
+        if (timer !== null) {
+          window.clearInterval(timer);
+          timer = null;
+        }
+        document.removeEventListener('visibilitychange', onResume);
+        window.removeEventListener('focus', onResume);
+      };
+
+      return {
+        start,
+        stop,
+        getSnapshot: () => state,
+        subscribe: (fn) => {
+          listeners.add(fn);
+          return () => listeners.delete(fn);
+        },
+        refresh: () => fetchNow(),
+        refreshIfStale: (maxAgeMs = 1500) => {
+          if (Date.now() - state.updatedAt > maxAgeMs) {
+            void fetchNow();
+          }
+        },
+      };
     }
 
     const STYLE_ID = 'abb-dsh-plugin-styles';
@@ -225,8 +456,105 @@ window.__ModuleLoader__.load({
   font-size: 12px;
   animation: abb-pop-in 160ms cubic-bezier(0.23, 1, 0.32, 1);
 }
+/* $ Quick Tab Picker Menu inside conversation.input.overlay — floats above composer card like DSH MenuView */
+.abb-picker-shell {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  max-height: 360px;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--dsw-radius-lg, 12px);
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-specific-menu, var(--dsw-alias-bg-layer-2));
+  backdrop-filter: var(--dsw-menu-backdrop-filter, none);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: var(--dsw-elevation-prominent, 0 12px 32px rgba(0, 0, 0, 0.2));
+  overflow: hidden;
+  animation: abb-pop-in 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.abb-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 12px 5px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1);
+  background: var(--dsw-alias-menu-group-header-fill, transparent);
+}
+.abb-picker-heading {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dsw-alias-label-secondary);
+}
+.abb-picker-keys {
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.abb-picker-list {
+  max-height: 292px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.abb-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--dsw-radius-md, 8px);
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.3;
+}
+.abb-picker-row[data-active="true"] {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.abb-picker-ref {
+  flex-shrink: 0;
+  font-family: var(--ds-font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--dsw-radius-sm, 5px);
+  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-card-fill);
+  color: var(--dsw-alias-brand-text, var(--dsw-alias-brand-primary));
+}
+.abb-picker-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+.abb-picker-host {
+  flex-shrink: 1;
+  max-width: 170px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--dsw-alias-label-tertiary);
+}
 @media (prefers-reduced-motion: reduce) {
   .abb-popover,
+  .abb-picker-shell,
   .abb-dock-trigger,
   .abb-btn-mini {
     animation: none;
@@ -432,83 +760,323 @@ window.__ModuleLoader__.load({
       if (!el) {
         el = document.createElement('style');
         el.id = STYLE_ID;
-        el.textContent = SCOPED_CSS;
         document.head.appendChild(el);
       }
+      el.textContent = SCOPED_CSS;
       return el;
     }
 
-    function createDockComponent(ctx, surface) {
+    function useBridgeStatus(statusStore) {
+      const [snap, setSnap] = useState(() => statusStore.getSnapshot());
+      useEffect(() => {
+        setSnap(statusStore.getSnapshot());
+        return statusStore.subscribe(() => setSnap(statusStore.getSnapshot()));
+      }, [statusStore]);
+      return snap;
+    }
+
+    function useLocaleStrings(ctx) {
+      const [tick, setTick] = useState(0);
+      const localeSvc = ctx.get('locale');
+      useEffect(() => {
+        if (!localeSvc || typeof localeSvc.subscribe !== 'function') return;
+        return localeSvc.subscribe(() => setTick((n) => n + 1));
+      }, [localeSvc]);
+      void tick;
+      const activeLocale =
+        localeSvc?.snapshot?.active ?? document.documentElement.lang ?? navigator.language;
+      return getStrings(activeLocale);
+    }
+
+    /**
+     * Native `$` Browser Tab Quick-Picker mounted in `conversation.input.overlay`.
+     * Triggered whenever the user types `$` (at draft start or after whitespace) in the composer.
+     */
+    function createDollarTabPicker(ctx, statusStore, hasReferenceCodec) {
+      return function DollarTabPickerOverlay({ actx, shell }) {
+        const t = useLocaleStrings(ctx);
+        const bridge = useBridgeStatus(statusStore);
+
+        const [hit, setHit] = useState(null);
+        const [highlightIdx, setHighlightIdx] = useState(0);
+        const [dismissedAt, setDismissedAt] = useState(null);
+        const menuRef = useRef(null);
+        const rowRefs = useRef([]);
+
+        const readTriggerFromShell = useCallback(() => {
+          if (!shell) return null;
+          const snap = shell.snapshot || shell.state?.getSnapshot?.();
+          if (!snap || (snap.phase !== 'plain' && snap.phase !== 'claimed')) return null;
+
+          let detectText =
+            shell.projection?.detectText ??
+            shell.draftEditor?.projection?.detectText;
+          let caret = null;
+
+          if (typeof shell.caretSpan === 'function') {
+            const sel = shell.caretSpan();
+            if (sel && sel.start === sel.end) {
+              caret = sel.end;
+            } else {
+              return null; // Non-collapsed text selection: do not pop completion menu.
+            }
+          }
+
+          if (typeof detectText !== 'string') {
+            detectText = typeof snap.draft === 'string' ? snap.draft : '';
+            if (caret === null) caret = detectText.length;
+          }
+
+          if (caret === null) return null;
+          const detected = detectDollarTabTrigger(detectText, caret);
+          if (!detected) return null;
+          return {
+            ...detected,
+            draftRev: snap.draftRev,
+          };
+        }, [shell]);
+
+        // Track every Lexical text/selection update + InputState update
+        useEffect(() => {
+          if (!shell) return;
+          const sync = () => {
+            const nextHit = readTriggerFromShell();
+            setHit((prev) => {
+              if (!nextHit) {
+                setDismissedAt(null);
+                return null;
+              }
+              if (
+                prev &&
+                prev.start === nextHit.start &&
+                prev.end === nextHit.end &&
+                prev.query === nextHit.query &&
+                prev.draftRev === nextHit.draftRev
+              ) {
+                return prev;
+              }
+              if (!prev) {
+                statusStore.refreshIfStale(1500);
+              }
+              if (prev && prev.start !== nextHit.start) {
+                setDismissedAt(null);
+              }
+              return nextHit;
+            });
+          };
+
+          sync();
+          const offs = [];
+          if (shell.state && typeof shell.state.subscribe === 'function') {
+            offs.push(shell.state.subscribe(sync));
+          }
+          if (shell.editor && typeof shell.editor.registerUpdateListener === 'function') {
+            offs.push(shell.editor.registerUpdateListener(sync));
+          }
+          return () => {
+            for (const off of offs) {
+              if (typeof off === 'function') off();
+            }
+          };
+        }, [shell, readTriggerFromShell, statusStore]);
+
+        const isConnected = Boolean(bridge.status?.extensionConnected);
+        const filteredTabs = useMemo(() => {
+          if (!hit || !isConnected) return [];
+          return filterBrowserTabs(bridge.authorizedTabs, hit.query);
+        }, [hit, isConnected, bridge.authorizedTabs]);
+
+        const isOpen =
+          hit !== null &&
+          dismissedAt !== hit.start &&
+          filteredTabs.length > 0;
+
+        // Reset/clamp highlight when candidates change
+        useEffect(() => {
+          setHighlightIdx((idx) => {
+            if (filteredTabs.length === 0) return 0;
+            return idx >= filteredTabs.length ? 0 : idx;
+          });
+        }, [filteredTabs.length, hit?.query]);
+
+        // Keep highlighted row scrolled into view
+        useEffect(() => {
+          if (!isOpen) return;
+          const el = rowRefs.current[highlightIdx];
+          if (el && typeof el.scrollIntoView === 'function') {
+            el.scrollIntoView({ block: 'nearest' });
+          }
+        }, [isOpen, highlightIdx]);
+
+        const pickTab = useCallback(
+          (tab) => {
+            if (!hit || !shell || !actx) return;
+            const liveRev = shell.snapshot?.draftRev ?? hit.draftRev;
+            const span = { start: hit.start, end: hit.end, draftRev: liveRev };
+            const titleText = tab.title || tab.host || 'Tab';
+            const chipLabel = `${tab.tabRef} ${truncateText(titleText, 28)}`;
+
+            let applied = false;
+            if (hasReferenceCodec()) {
+              applied = Boolean(
+                actx.bail('slash/input-insert-reference', {
+                  reference: {
+                    source: SOURCE_NAME,
+                    ref: encodeTabRefPayload(tab),
+                    label: chipLabel,
+                    appearance: 'session',
+                    clipboardText: `${tab.tabRef} ${titleText}`,
+                  },
+                  span,
+                }),
+              );
+            }
+            if (!applied) {
+              const serialized = `${formatSerializedTab(tab)} `;
+              applied = Boolean(
+                actx.bail('slash/input-insert-text', {
+                  text: serialized,
+                  span,
+                }),
+              );
+            }
+            setHit(null);
+            setDismissedAt(null);
+            shell.focus?.();
+          },
+          [hit, shell, actx, hasReferenceCodec],
+        );
+
+        // Capture-phase keyboard navigation while menu is open
+        useEffect(() => {
+          if (!isOpen) return;
+          const editorEl = shell?.editor?.getRootElement?.() || null;
+
+          const onKeyDown = (ev) => {
+            if (ev.isComposing || ev.keyCode === 229) return;
+            if (editorEl && !editorEl.contains(ev.target) && !menuRef.current?.contains(ev.target)) {
+              return;
+            }
+            if (ev.key === 'ArrowDown') {
+              ev.preventDefault();
+              ev.stopPropagation();
+              ev.stopImmediatePropagation();
+              setHighlightIdx((i) => (i + 1) % filteredTabs.length);
+            } else if (ev.key === 'ArrowUp') {
+              ev.preventDefault();
+              ev.stopPropagation();
+              ev.stopImmediatePropagation();
+              setHighlightIdx((i) => (i - 1 + filteredTabs.length) % filteredTabs.length);
+            } else if (ev.key === 'Enter' || ev.key === 'Tab') {
+              if (ev.shiftKey || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+              ev.preventDefault();
+              ev.stopPropagation();
+              ev.stopImmediatePropagation();
+              const chosen = filteredTabs[highlightIdx] ?? filteredTabs[0];
+              if (chosen) pickTab(chosen);
+            } else if (ev.key === 'Escape') {
+              ev.preventDefault();
+              ev.stopPropagation();
+              ev.stopImmediatePropagation();
+              setDismissedAt(hit.start);
+            }
+          };
+
+          const onPointerDown = (ev) => {
+            const target = ev.target;
+            if (menuRef.current?.contains(target)) return;
+            if (editorEl && editorEl.contains(target)) return;
+            setDismissedAt(hit.start);
+          };
+
+          window.addEventListener('keydown', onKeyDown, true);
+          window.addEventListener('pointerdown', onPointerDown, true);
+          return () => {
+            window.removeEventListener('keydown', onKeyDown, true);
+            window.removeEventListener('pointerdown', onPointerDown, true);
+          };
+        }, [isOpen, filteredTabs, highlightIdx, hit, pickTab, shell]);
+
+        if (!isOpen) return null;
+
+        return h(
+          'div',
+          {
+            ref: menuRef,
+            className: 'abb-picker-shell',
+            'data-abb-tab-picker': 'open',
+          },
+          h(
+            'div',
+            { className: 'abb-picker-header' },
+            h(
+              'span',
+              { className: 'abb-picker-heading' },
+              h('span', { className: 'abb-dot', 'data-state': 'connected', 'aria-hidden': true }),
+              h('span', null, `${t.pickerTitle} (${filteredTabs.length})`),
+            ),
+            h('span', { className: 'abb-picker-keys' }, t.pickerKeys),
+          ),
+          h(
+            'div',
+            {
+              className: 'abb-picker-list',
+              role: 'listbox',
+              'aria-label': t.pickerAria,
+            },
+            filteredTabs.map((tab, idx) => {
+              const active = idx === highlightIdx;
+              return h(
+                'button',
+                {
+                  key: `${tab.tabId}-${tab.tabRef}`,
+                  ref: (el) => {
+                    rowRefs.current[idx] = el;
+                  },
+                  type: 'button',
+                  role: 'option',
+                  'aria-selected': active,
+                  className: 'abb-picker-row',
+                  'data-active': active ? 'true' : 'false',
+                  onMouseEnter: () => setHighlightIdx(idx),
+                  onMouseDown: (ev) => {
+                    // Prevent blurring the composer editor, matching DSH input-trigger convention
+                    ev.preventDefault();
+                    pickTab(tab);
+                  },
+                },
+                h('span', { className: 'abb-picker-ref' }, tab.tabRef),
+                h('span', { className: 'abb-picker-title' }, tab.title || tab.host || '(untitled)'),
+                tab.active && h('span', { className: 'abb-badge', 'data-tone': 'success' }, t.activeTabBadge),
+                h('span', { className: 'abb-picker-host', title: tab.url }, tab.host),
+              );
+            }),
+          ),
+        );
+      };
+    }
+
+    function createDockComponent(ctx, statusStore, surface) {
       return function BrowserBridgeControl() {
-        const [langTick, setLangTick] = useState(0);
-        const [status, setStatus] = useState(null);
-        const [loadState, setLoadState] = useState('loading'); // 'loading' | 'ok' | 'error'
+        const t = useLocaleStrings(ctx);
+        const bridge = useBridgeStatus(statusStore);
+        const { status, loadState, authorizedTabs } = bridge;
+
         const [actionError, setActionError] = useState(null);
         const [detachingIds, setDetachingIds] = useState(() => new Set());
         const [open, setOpen] = useState(false);
-        const [copyState, setCopyState] = useState('idle'); // 'idle' | 'copied' | 'failed'
+        const [copyState, setCopyState] = useState('idle');
         const [popStyle, setPopStyle] = useState({ left: 12, top: 12 });
 
         const triggerRef = useRef(null);
         const popoverRef = useRef(null);
         const copyTimerRef = useRef(null);
-        const fetchSeqRef = useRef(0);
-
-        const localeSvc = ctx.get('locale');
-        const activeLocale =
-          localeSvc?.snapshot?.active ?? document.documentElement.lang ?? navigator.language;
-        const t = getStrings(activeLocale);
-        void langTick;
 
         useEffect(() => {
-          if (!localeSvc || typeof localeSvc.subscribe !== 'function') return;
-          return localeSvc.subscribe(() => {
-            setLangTick((n) => n + 1);
-          });
-        }, [localeSvc]);
-
-        const fetchStatus = useCallback(async () => {
-          const seq = ++fetchSeqRef.current;
-          try {
-            const res = await fetch('/api/agent-browser-bridge/status', { cache: 'no-store' });
-            if (seq !== fetchSeqRef.current) return;
-            if (!res.ok) {
-              setLoadState('error');
-              setStatus(null);
-              return;
-            }
-            const data = await res.json();
-            if (seq !== fetchSeqRef.current) return;
-            setStatus(data);
-            setLoadState('ok');
-          } catch {
-            if (seq !== fetchSeqRef.current) return;
-            setLoadState('error');
-            setStatus(null);
-          }
-        }, []);
-
-        useEffect(() => {
-          void fetchStatus();
-          const timer = window.setInterval(() => {
-            if (document.visibilityState === 'visible') {
-              void fetchStatus();
-            }
-          }, 5000);
-          const onResume = () => {
-            if (document.visibilityState === 'visible') {
-              void fetchStatus();
-            }
-          };
-          document.addEventListener('visibilitychange', onResume);
-          window.addEventListener('focus', onResume);
           return () => {
-            window.clearInterval(timer);
-            document.removeEventListener('visibilitychange', onResume);
-            window.removeEventListener('focus', onResume);
             if (copyTimerRef.current) window.clearTimeout(copyTimerRef.current);
           };
-        }, [fetchStatus]);
+        }, []);
 
         const updatePosition = useCallback(() => {
           const trigger = triggerRef.current;
@@ -522,7 +1090,6 @@ window.__ModuleLoader__.load({
           let left = rect.left + rect.width / 2 - popWidth / 2;
           left = Math.max(12, Math.min(left, vw - popWidth - 12));
 
-          // Prefer opening above the trigger; flip below if not enough room above.
           let top = rect.top - popHeight - 8;
           if (top < 12) {
             top = Math.min(rect.bottom + 8, vh - popHeight - 12);
@@ -546,10 +1113,7 @@ window.__ModuleLoader__.load({
           };
           const onOutside = (ev) => {
             const target = ev.target;
-            if (
-              triggerRef.current?.contains(target) ||
-              popoverRef.current?.contains(target)
-            ) {
+            if (triggerRef.current?.contains(target) || popoverRef.current?.contains(target)) {
               return;
             }
             setOpen(false);
@@ -568,7 +1132,6 @@ window.__ModuleLoader__.load({
 
         const allTabs = status?.tabs || [];
         const eligibleTabs = allTabs.filter((tab) => tab.eligible);
-        const authorizedTabs = eligibleTabs.filter((tab) => tab.authorized);
         const tabPolicyMode = status?.extension?.tabPolicyMode || 'auto';
 
         const visualState =
@@ -611,7 +1174,7 @@ window.__ModuleLoader__.load({
             if (!res.ok || data?.ok === false) {
               setActionError(data?.error || `HTTP ${res.status}`);
             }
-            await fetchStatus();
+            await statusStore.refresh();
           } catch (err) {
             setActionError(err instanceof Error ? err.message : String(err));
           } finally {
@@ -721,11 +1284,12 @@ window.__ModuleLoader__.load({
                           return h(
                             'div',
                             { key: tab.tabId, className: 'abb-tab-row' },
+                            h('span', { className: 'abb-picker-ref' }, tab.tabRef),
                             h(
                               'div',
                               { className: 'abb-tab-meta' },
                               h('div', { className: 'abb-tab-title' }, tab.title || '(untitled)'),
-                              h('div', { className: 'abb-tab-host' }, shortHost(tab.url)),
+                              h('div', { className: 'abb-tab-host' }, tab.host),
                             ),
                             h(
                               'div',
@@ -758,6 +1322,7 @@ window.__ModuleLoader__.load({
                           );
                         }),
                   ),
+                  h('div', { className: 'abb-steps', style: { marginTop: '6px' } }, t.pickerHint),
                 ),
               status?.extensionZipAvailable &&
                 h(
@@ -793,7 +1358,7 @@ window.__ModuleLoader__.load({
               onClick: () => {
                 setActionError(null);
                 setOpen((prev) => !prev);
-                void fetchStatus();
+                void statusStore.refresh();
               },
             },
             h('span', { className: 'abb-dot', 'data-state': visualState, 'aria-hidden': true }),
@@ -808,12 +1373,79 @@ window.__ModuleLoader__.load({
       inject: ['slots'],
       apply(ctx) {
         const styleEl = ensureStyleElement();
+        const statusStore = createBridgeStatusStore();
+        statusStore.start();
+
         ctx.effect(() => () => {
+          statusStore.stop();
           styleEl.remove();
         });
 
-        const ComposerDockControl = createDockComponent(ctx, 'dock');
-        const HeroOptionControl = createDockComponent(ctx, 'hero');
+        let codecRegistered = false;
+
+        // Register ReferenceCodec for atomic `$` tab chips without polluting the `@` menu
+        ctx.inject(['inputTriggers'], (trigCtx) => {
+          const unregister = trigCtx.inputTriggers.registerSource({
+            trigger: '@',
+            name: SOURCE_NAME,
+            order: 99,
+            showGroupTitle: false,
+            candidates: async () => [],
+            onPick: () => undefined,
+            codec: {
+              clipboardText(rawRef) {
+                const parsed = decodeTabRefPayload(rawRef);
+                return `${parsed.tabRef} ${parsed.title || shortHost(parsed.url)}`.trim();
+              },
+              async serialize(rawRef) {
+                const parsed = decodeTabRefPayload(rawRef);
+                // Re-resolve live tabRef/title/url if the tab is currently open so $tN is always fresh
+                const liveTabs = statusStore.getSnapshot().authorizedTabs;
+                const live =
+                  (parsed.tabId !== undefined
+                    ? liveTabs.find((x) => x.tabId === parsed.tabId)
+                    : undefined) ??
+                  (parsed.url ? liveTabs.find((x) => x.url === parsed.url) : undefined);
+                return formatSerializedTab(live ?? parsed);
+              },
+            },
+          });
+          codecRegistered = true;
+          trigCtx.effect(() => () => {
+            codecRegistered = false;
+            unregister();
+          });
+        });
+
+        // Register `$` Quick Tab Picker inside conversation.input.overlay
+        ctx.inject(['sessions', 'conversation'], (convCtx) => {
+          const DollarTabPickerOverlay = createDollarTabPicker(
+            convCtx,
+            statusStore,
+            () => codecRegistered,
+          );
+          convCtx.slots.inject('conversation.input.overlay', () =>
+            convCtx.slots.register(
+              {
+                name: 'conversation.input.overlay',
+                id: 'agent-browser-bridge-dollar-tab-picker',
+                order: 10,
+                inject: (sessionId) => {
+                  const actx = convCtx.sessions.scope(sessionId);
+                  if (actx === undefined) return { actx: null, shell: null };
+                  return {
+                    actx,
+                    shell: convCtx.conversation.input.for(actx),
+                  };
+                },
+              },
+              DollarTabPickerOverlay,
+            ),
+          );
+        });
+
+        const ComposerDockControl = createDockComponent(ctx, statusStore, 'dock');
+        const HeroOptionControl = createDockComponent(ctx, statusStore, 'hero');
 
         ctx.slots.inject('conversation.composer.dock', () =>
           ctx.slots.register(

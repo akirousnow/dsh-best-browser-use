@@ -787,6 +787,14 @@ export function apply(ctx, config) {
         } catch {
           extensionZipAvailable = false;
         }
+        const rawTabs = relayStatus?.tabs ?? [];
+        let authorizedSeq = 1;
+        const enrichedTabs = rawTabs.map((tab) => {
+          if (tab.eligible && tab.authorized) {
+            return { ...tab, tabRef: `$t${authorizedSeq++}` };
+          }
+          return tab;
+        });
         writeJson(
           res,
           200,
@@ -802,7 +810,7 @@ export function apply(ctx, config) {
             tokenRequired: relayStatus?.tokenRequired ?? Boolean(cfg.token),
             extensionConnected: Boolean(relayStatus?.extensionConnected),
             extension: relayStatus?.extension ?? null,
-            tabs: relayStatus?.tabs ?? [],
+            tabs: enrichedTabs,
             cdpClients: relayStatus?.cdpClients ?? 0,
             extensionZipAvailable,
           },

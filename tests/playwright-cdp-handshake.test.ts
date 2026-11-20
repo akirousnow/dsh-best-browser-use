@@ -68,17 +68,23 @@ describe('Real playwright-core connectOverCDP handshake against RelayServer + Cd
     });
     exts.push(ext);
 
+    const targetIdForTab = (tabId: number) =>
+      tabId === 42 ? REAL_CHROME_TARGET_ID : `REALTARGET${String(tabId).padStart(22, '0')}`;
+
     // Emulate Chrome's real page-level CDP responses expected by playwright-core CRPage + engine
     ext.chromeState.commandHandler = async (target, method, params) => {
       const tabId = target.tabId ?? 42;
+      const realId = targetIdForTab(tabId);
+      const tabUrl = ext.chromeState.tabs.get(tabId)?.url ?? 'https://linux.do/';
+      const tabTitle = ext.chromeState.tabs.get(tabId)?.title ?? 'LINUX DO - 新的理想型社区';
       switch (method) {
         case 'Target.getTargetInfo':
           return {
             targetInfo: {
-              targetId: REAL_CHROME_TARGET_ID,
+              targetId: realId,
               type: 'page',
-              title: 'LINUX DO - 新的理想型社区',
-              url: 'https://linux.do/',
+              title: tabTitle,
+              url: tabUrl,
               attached: true,
               canAccessOpener: false,
               browserContextId: 'default',
@@ -88,10 +94,10 @@ describe('Real playwright-core connectOverCDP handshake against RelayServer + Cd
           return {
             frameTree: {
               frame: {
-                id: REAL_CHROME_TARGET_ID,
+                id: realId,
                 loaderId: `loader-${tabId}`,
-                url: 'https://linux.do/',
-                securityOrigin: 'https://linux.do',
+                url: tabUrl,
+                securityOrigin: tabUrl.startsWith('http') ? new URL(tabUrl).origin : 'null',
                 mimeType: 'text/html',
               },
               childFrames: [],
@@ -101,7 +107,7 @@ describe('Real playwright-core connectOverCDP handshake against RelayServer + Cd
           return { identifier: '1' };
         case 'Page.createIsolatedWorld': {
           const worldName = String(params?.worldName ?? '');
-          const frameId = String(params?.frameId ?? REAL_CHROME_TARGET_ID);
+          const frameId = String(params?.frameId ?? realId);
           setTimeout(() => {
             ext.chromeState.triggerDebuggerEvent({ tabId }, 'Runtime.executionContextCreated', {
               context: {
@@ -123,22 +129,22 @@ describe('Real playwright-core connectOverCDP handshake against RelayServer + Cd
                 origin: 'https://linux.do',
                 name: '',
                 uniqueId: `ctx-${tabId}-1`,
-                auxData: { isDefault: true, type: 'default', frameId: REAL_CHROME_TARGET_ID },
+                auxData: { isDefault: true, type: 'default', frameId: realId },
               },
             });
           }, 5);
           return {};
         case 'Runtime.evaluate':
-          return { result: { type: 'string', value: 'LINUX DO - 新的理想型社区' } };
+          return { result: { type: 'string', value: tabTitle } };
         case 'Runtime.callFunctionOn':
-          return { result: { type: 'string', value: 'LINUX DO - 新的理想型社区' } };
+          return { result: { type: 'string', value: tabTitle } };
         case 'Accessibility.getFullAXTree':
           return {
             nodes: [
               {
                 nodeId: '1',
                 role: { type: 'role', value: 'RootWebArea' },
-                name: { type: 'computedString', value: 'LINUX DO - 新的理想型社区' },
+                name: { type: 'computedString', value: tabTitle },
                 childIds: ['2', '3'],
               },
               {
@@ -197,5 +203,25 @@ describe('Real playwright-core connectOverCDP handshake against RelayServer + Cd
     expect(shotRes.width).toBe(1280);
     expect(shotRes.height).toBe(720);
     expect((await stat(shotRes.filePath)).isFile()).toBe(true);
+
+    // 4. Connect a SECOND simultaneous real playwright-core client to the SAME Relay (multi-agent reuse)
+    // Must NOT crash client 1 with Playwright's "Duplicate target" assertion!
+    const engine2 = new BrowserEngine({
+      relayPort: port,
+      autoStartRelay: false,
+      screenshotDir: tmpDir,
+    });
+    engines.push(engine2);
+    const tabsRes2 = await engine2.browserTabs();
+    expect(tabsRes2.tabs).toHaveLength(1);
+    expect(tabsRes2.tabs[0]?.url).toBe('https://linux.do/');
+    // Verify engine 1 is still alive and healthy after engine 2 connected
+    expect((await engine.browserTabs()).tabs).toHaveLength(1);
+
+    // 5. browser_new_tab via real playwright-core context.newPage() (verifies Target.createTarget returns real targetId!)
+    const newTab = await engine.browserNewTab({ background: true });
+    expect(newTab.tabId).toBe('$t2');
+    expect(newTab.background).toBe(true);
+    expect((await engine.browserTabs()).tabs).toHaveLength(2);
   });
 });
